@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import recovery
 
 SCRIPT = Path('/usr/local/sbin/local-system-backup')
 EXCLUDES = Path('/etc/local-system-backup.exclude')
@@ -22,6 +23,7 @@ SERVICE = 'local-system-backup.service'
 TIMER = 'local-system-backup.timer'
 LOCK = Path('/run/lock/local-system-backup.lock')
 BACKUPS = Path('/var/lib/m45-drive-backuper/settings-backups')
+RECOVERY = Path('/var/lib/m45-drive-backuper/recovery/software-recovery.json')
 ENV = dict(os.environ, PATH='/usr/sbin:/usr/bin:/sbin:/bin', LC_ALL='C')
 
 
@@ -70,6 +72,8 @@ def read_config():
                 source_uuid=shlex.split(source_uuid[1])[0] if source_uuid else '',
                 source_mountpoint=shlex.split(source_mount[1])[0] if source_mount else '',
                 auto_mount='# M45 auto mount: yes' in text,
+                include_system='# M45 include system settings: yes' in text,
+                package_recovery='# M45 software recovery: yes' in text,
                 compression=compression[1] if compression else 'zstd,3',
                 scan_mode='full_scan' if '--files-cache disabled' in text else 'incremental',
                 reserve_gib=int(reserve[1]) // 1073741824 if reserve else 10,
@@ -136,7 +140,7 @@ def status():
 
 def validate(data):
     expected = {'mountpoint', 'hours', 'hourly', 'daily', 'weekly', 'monthly', 'excludes', 'revision',
-                'source', 'source_kind', 'compression', 'scan_mode', 'reserve_gib', 'quota_gib', 'exclude_caches', 'auto_mount', 'repository', 'destination_kind'}
+                'source', 'source_kind', 'compression', 'scan_mode', 'reserve_gib', 'quota_gib', 'exclude_caches', 'auto_mount', 'repository', 'destination_kind', 'include_system', 'package_recovery'}
     if not isinstance(data, dict) or set(data) != expected:
         raise ValueError('Unexpected configuration fields.')
     if not isinstance(data['revision'], str) or not re.fullmatch('[a-f0-9]{64}', data['revision']):
@@ -150,6 +154,8 @@ def validate(data):
             raise ValueError('Storage limits must be whole GiB values within range.')
     if type(data['exclude_caches']) is not bool or type(data['auto_mount']) is not bool:
         raise ValueError('Cache and automatic mount options must be checkbox values.')
+    if any(type(data[key]) is not bool for key in ('include_system', 'package_recovery')):
+        raise ValueError('System settings and software recovery must be checkbox values.')
     source = data['source']
     if not isinstance(source, str) or not source.startswith('/') or len(source) > 4096 or any(c in source for c in '\0\n\r') or '..' in Path(source).parts:
         raise ValueError('Choose an absolute source folder or mounted drive.')
@@ -208,9 +214,14 @@ def replacement(text, data):
     if data.get('source_uuid'):
         checks += '[[ $(findmnt -rn -M "$source_mountpoint" -o UUID) == "$source_uuid" ]] || { echo "Expected source drive is not mounted." >&2; exit 1; }\n'
     checks += '[[ -d "$source" ]] || { echo "Backup source is unavailable." >&2; exit 1; }\n'
-    checks += 'exec 8<"$source"\n# End M45 source checks\n'
+    checks += 'exec 8<"$source"\nbackup_sources=("$source")\n'
+    if data['include_system']:
+        checks += '# M45 include system settings: yes\n'
+        checks += 'for extra in ' + ' '.join(map(shlex.quote,recovery.SYSTEM_PATHS)) + '; do\n'
+        checks += '    [[ -e "$extra" ]] || continue\n    if [[ "$source" != / && "$extra" != "$source" && "$extra" != "$source/"* ]]; then backup_sources+=("$extra"); fi\ndone\n'
+    checks += '# End M45 source checks\n'
     text = re.sub(r'^mountpoint=.+$', lambda m: m[0] + '\nsource=' + shlex.quote(data['source']) + '\nsource_kind=' + data['source_kind'] + '\n' + checks.rstrip(), text, flags=re.M)
-    text, count = re.subn(r"(^\s*'::home-\{now:[^']+\}' )(.+?)( \|\| backup_rc=\$\?)$", lambda m: m[1] + '"$source"' + m[3], text, flags=re.M)
+    text, count = re.subn(r"(^\s*'::home-\{now:[^']+\}' )(.+?)( \|\| backup_rc=\$\?)$", lambda m: m[1] + '"${backup_sources[@]}"' + m[3], text, flags=re.M)
     if count != 1:
         raise ValueError('Unsupported backup source command.')
     compression = '--compression ' + data['compression'] + (' --files-cache disabled' if data['scan_mode'] == 'full_scan' else '')
@@ -223,6 +234,12 @@ def replacement(text, data):
     text, count = re.subn(r"^\(\( available > \d+ \)\).+$", f"(( available > {data['reserve_gib'] * 1073741824} )) || {{ echo 'Less than {data['reserve_gib']} GiB free after cleanup; backup stopped.' >&2; exit 1; }}", text, flags=re.M)
     if count != 1:
         raise ValueError('Unsupported free-space guard.')
+    text = re.sub(r'^# M45 software recovery: yes\n.*?^# End M45 software recovery\n', '', text, flags=re.M | re.S)
+    if data['package_recovery']:
+        block = '# M45 software recovery: yes\n/usr/libexec/m45-drive-backuper/backend recovery-refresh\nbackup_sources+=(/var/lib/m45-drive-backuper/recovery)\n# End M45 software recovery\n'
+        text, count = re.subn(r'^(# Reclaim abandoned transaction data.*)$', lambda m: block + m[0], text, flags=re.M)
+        if count != 1:
+            raise ValueError('Unsupported repository setup block.')
     if data['quota_gib'] >= 0:
         text = re.sub(r'^# M45 storage limit GiB: \d+\n.*?^# End M45 storage limit\n', '', text, flags=re.M | re.S)
         quota = f"borg config \"$BORG_REPO\" storage_quota {data['quota_gib'] * 1073741824}\n" if data['quota_gib'] else 'if borg config "$BORG_REPO" storage_quota >/dev/null 2>&1; then borg config --delete "$BORG_REPO" storage_quota; fi\n'
@@ -270,11 +287,12 @@ def configure_destination(data, old, source):
         raise ValueError('Choose a dedicated backup folder inside the drive, or select “This drive” in the app.')
     marker = path/'.m45-drive-backuper'
     machine = Path('/etc/machine-id').read_text().strip()
-    env = dict(ENV,BORG_CACHE_DIR='/var/cache/local-home-backup',BORG_SECURITY_DIR='/var/lib/local-home-backup/security',BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK='yes',BORG_PASSPHRASE='')
+    env = dict(ENV,BORG_CACHE_DIR='/var/cache/local-home-backup',BORG_SECURITY_DIR='/var/lib/local-home-backup/security',BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK='yes',BORG_RELOCATED_REPO_ACCESS_IS_OK='yes',BORG_PASSPHRASE='')
     if path.exists() and (not path.is_dir() or any(path.iterdir())):
         managed = marker.is_file() and marker.read_text().strip() == machine
         legacy = path.name == 'borg-home-' + machine
-        if not managed and not legacy:
+        borg_layout = (path/'config').is_file() and (path/'data').is_dir()
+        if not managed and not legacy and not borg_layout:
             raise ValueError('This folder contains other files. Create an empty backup folder here instead.')
         run('borg','info','--json','--lock-wait','1',str(path),env=env,timeout=90)
     else:
@@ -296,6 +314,8 @@ def apply(data):
     repository = Path(data['repository']).resolve() if data['repository'] else destination
     if not source.is_dir() or source.is_relative_to(repository):
         raise ValueError('Choose a source folder outside the backup destination.')
+    if data['include_system'] and any(Path(p).is_relative_to(repository) for p in recovery.SYSTEM_PATHS):
+        raise ValueError('The backup destination cannot contain the system settings being backed up.')
     data = dict(data, source=str(source))
     if data['source_kind'] == 'drive':
         data['source_uuid'] = run('findmnt', '-rn', '-M', str(source), '-o', 'UUID', check=False)
@@ -368,7 +388,11 @@ def main():
     args = sys.argv[1:]
     if args == ['status']:
         return status()
-    if not args or args[0] not in ('apply', 'start', 'enable', 'disable', 'archives', 'mount'):
+    if args in (['recovery-export'], ['packages-preview']):
+        if args[0] == 'recovery-export':
+            return dict(manifest=recovery.inventory(read_config()['source']))
+        return recovery.restore(read_manifest())
+    if not args or args[0] not in ('apply', 'start', 'enable', 'disable', 'archives', 'mount', 'recovery-refresh', 'packages-install'):
         raise ValueError('Unsupported action.')
     if os.geteuid() != 0:
         raise PermissionError('This action requires administrator authentication.')
@@ -376,6 +400,13 @@ def main():
         return apply(json.loads(base64.b64decode(args[1], validate=True)))
     if len(args) != 1:
         raise ValueError('Unexpected arguments.')
+    if args[0] == 'recovery-refresh':
+        RECOVERY.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        manifest = recovery.inventory(read_config()['source'])
+        atomic(RECOVERY,json.dumps(manifest,indent=2)+'\n',0o600)
+        return dict(message='Software recovery list refreshed.', warnings=manifest['warnings'])
+    if args[0] == 'packages-install':
+        return recovery.restore(read_manifest(),apply=True)
     if args[0] == 'archives':
         return archives()
     if args[0] == 'mount':
@@ -385,6 +416,13 @@ def main():
     run('systemctl', *command)
     return dict(message={'start': 'Backup requested; check the service status and journal.',
                          'enable': 'Automatic backups enabled.', 'disable': 'Automatic backups disabled. An active backup will finish.'}[args[0]])
+
+
+def read_manifest():
+    content = sys.stdin.read(4 * 1024 * 1024 + 1)
+    if len(content) > 4 * 1024 * 1024:
+        raise ValueError('Recovery files must be smaller than 4 MiB.')
+    return json.loads(content)
 
 
 if __name__ == '__main__':

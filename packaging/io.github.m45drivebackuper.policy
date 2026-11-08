@@ -3,8 +3,8 @@
 <policyconfig>
   <vendor>M45 Drive Backuper</vendor>
   <action id="io.github.m45drivebackuper.manage">
-    <description>Manage the existing Borg backup service</description>
-    <message>Authentication is required to manage Borg backups or read the backup archive catalog.</message>
+    <description>Manage backups and software recovery</description>
+    <message>Authentication is required to manage Borg backups, read saved backups, or reinstall reviewed software packages.</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>

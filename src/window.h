@@ -50,7 +50,8 @@ private:
     QLineEdit *m_mount, *m_source, *m_repository;
     QComboBox *m_interval, *m_sourceKind, *m_sourceDrive, *m_destinationDrive, *m_destinationKind, *m_backupType, *m_compression, *m_quotaMode;
     QSpinBox *m_hourly, *m_daily, *m_weekly, *m_monthly, *m_reserve, *m_quota;
-    QCheckBox *m_startup, *m_notifications, *m_skipCaches, *m_autoMount;
+    QCheckBox *m_startup, *m_notifications, *m_skipCaches, *m_autoMount, *m_includeSystem, *m_packageRecovery;
+    QPushButton *m_exportRecovery, *m_restorePackages;
     QPushButton *m_save, *m_run, *m_enable, *m_disable, *m_archiveRefresh, *m_mountDrives;
     void render();
     void loadSettings();

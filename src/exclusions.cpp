@@ -50,11 +50,14 @@ ExclusionEditor::ExclusionEditor(bool preview, QWidget *parent) : QWidget(parent
 QString ExclusionEditor::text() const {return m_raw->toPlainText();}
 void ExclusionEditor::setText(const QString &text) {m_raw->setPlainText(text);}
 void ExclusionEditor::setSource(const QString &source) {m_source = QDir::cleanPath(source); m_sourceLabel->setText("Backup source: " + m_source); refresh();}
+void ExclusionEditor::setAdditionalSources(const QStringList &sources) {m_additionalSources = sources; refresh();}
 QString ExclusionEditor::summary() const {return m_summary->text();}
 bool ExclusionEditor::addPath(const QString &input, bool folder) {
     const auto path = QDir::cleanPath(input);
     const auto prefix = m_source == "/" ? "/" : m_source + '/';
-    if (!QDir::isAbsolutePath(path) || !QDir::isAbsolutePath(m_source) || path == m_source || !path.startsWith(prefix) || path != path.trimmed() || path.contains('\n') || path.contains('\r')) return false;
+    bool inside = path.startsWith(prefix);
+    for (const auto &extra : m_additionalSources) inside |= path == extra || path.startsWith(extra + '/');
+    if (!QDir::isAbsolutePath(path) || !QDir::isAbsolutePath(m_source) || path == m_source || !inside || path != path.trimmed() || path.contains('\n') || path.contains('\r')) return false;
     const auto pattern = (folder ? "pp:" : "pf:") + path.mid(1);
     for (const auto &line : text().split('\n')) if (line.trimmed() == pattern) return true;
     QString next = text(); if (!next.isEmpty() && !next.endsWith('\n')) next += '\n';
@@ -68,6 +71,7 @@ void ExclusionEditor::removeSelected() {
     setText(raw.join('\n'));
 }
 void ExclusionEditor::refresh() {
+    m_sourceLabel->setText("Backup source: " + m_source + (m_additionalSources.isEmpty() ? "" : "\nAlso included: " + m_additionalSources.join(", ")));
     m_list->clear(); int paths = 0, rules = 0, outside = 0;
     const auto lines = text().split('\n');
     for (int i=0;i<lines.size();++i) {
@@ -76,7 +80,9 @@ void ExclusionEditor::refresh() {
         if (rule.startsWith("pp:") || rule.startsWith("pf:")) {
             title = '/' + rule.mid(3); if (rule.mid(3).startsWith('/')) title = rule.mid(3);
             applies = rule.startsWith("pp:") ? "Folder and contents" : "This file"; ++paths;
-            if (!m_source.isEmpty() && m_source != "/" && title != m_source && !title.startsWith(m_source + '/')) {applies += " · outside source"; ++outside;}
+            bool inside = m_source == "/" || title == m_source || title.startsWith(m_source + '/');
+            for (const auto &extra : m_additionalSources) inside |= title == extra || title.startsWith(extra + '/');
+            if (!m_source.isEmpty() && !inside) {applies += " · outside source"; ++outside;}
         } else {
             ++rules;
             if (rule.endsWith("/**/node_modules")) title = "Downloaded Node.js dependencies (node_modules)";

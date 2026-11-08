@@ -69,12 +69,17 @@ private slots:
         QCOMPARE(window.findChild<QComboBox *>("compression")->currentData().toString(),QString("zstd,3"));
         QCOMPARE(window.findChild<QComboBox *>("backupType")->currentData().toString(),QString("incremental"));
         QVERIFY(window.findChild<QCheckBox *>("autoMount")->isChecked());
+        QVERIFY(window.findChild<QCheckBox *>("includeSystem")->isChecked());
+        QVERIFY(window.findChild<QCheckBox *>("packageRecovery")->isChecked());
+        QVERIFY(!window.findChild<QPushButton *>("exportRecovery")->isEnabled());
+        QVERIFY(!window.findChild<QPushButton *>("restorePackages")->isEnabled());
         window.selectPage(2);
         auto *excludes = window.findChild<ExclusionEditor *>();
         QVERIFY(excludes->isVisible());
         QVERIFY(excludes->text().contains("sh:home/dist/**/node_modules"));
         QVERIFY(excludes->addPath("/home/dist/Videos",true));
         QVERIFY(excludes->text().contains("pp:home/dist/Videos"));
+        QVERIFY(excludes->addPath("/usr/local/games",true));
         window.selectPage(3); QCOMPARE(window.findChild<QTableWidget *>("archiveTable")->rowCount(),3);
         window.selectPage(4);
         auto *filter = window.findChild<QLineEdit *>("activityFilter"); filter->setText("xyz-unmatched");

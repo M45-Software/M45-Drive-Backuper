@@ -14,6 +14,7 @@ public:
     QString text() const;
     void setText(const QString &text);
     void setSource(const QString &source);
+    void setAdditionalSources(const QStringList &sources);
     bool addPath(const QString &path, bool folder);
     void removeSelected();
     QString summary() const;
@@ -21,6 +22,7 @@ signals:
     void changed();
 private:
     QString m_source;
+    QStringList m_additionalSources;
     bool m_preview;
     QPlainTextEdit *m_raw;
     QTreeWidget *m_list;

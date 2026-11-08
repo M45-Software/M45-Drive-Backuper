@@ -4,10 +4,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shlex
 import tempfile
 import unittest
+import sys
 from unittest.mock import patch
 
+sys.path.insert(0,str(Path(__file__).resolve().parents[1] / 'backend'))
 spec = importlib.util.spec_from_file_location('backend', Path(__file__).resolve().parents[1] / 'backend/m45-drive-backuper.py')
 backend = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(backend)
@@ -32,7 +35,7 @@ borg create --stats --show-rc --compression zstd,3 --one-file-system \\
 class BackendTests(unittest.TestCase):
     def setUp(self):
         self.data = dict(mountpoint='/media/dist/Backup-SSD', hours=6, hourly=4, daily=7, weekly=4, monthly=6, revision='a'*64,
-                         source='/tmp', source_kind='folder', destination_kind='folder', compression='zstd,3', scan_mode='incremental', reserve_gib=10, quota_gib=-1, exclude_caches=True, auto_mount=False, repository='',
+                         source='/tmp', source_kind='folder', destination_kind='folder', compression='zstd,3', scan_mode='incremental', reserve_gib=10, quota_gib=-1, exclude_caches=True, auto_mount=False, repository='', include_system=False, package_recovery=False,
                          excludes='# Keep source trees\npp:home/dist/.cache\nsh:home/dist/**/node_modules\n')
 
     def test_validation(self):
@@ -59,6 +62,26 @@ class BackendTests(unittest.TestCase):
 
     def test_unknown_script_is_rejected(self):
         with self.assertRaises(ValueError): backend.replacement('echo changed', self.data)
+
+    def test_system_sources_are_archived_and_recovery_refresh_precedes_cleanup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); source=root/'home'; settings=root/'settings'; source.mkdir(); settings.mkdir()
+            (source/'personal.txt').write_text('personal'); (settings/'service.conf').write_text('settings')
+            data=dict(self.data,source=str(source),include_system=True,package_recovery=True)
+            with patch.object(backend.recovery,'SYSTEM_PATHS',[str(settings),str(root/'missing')]):
+                text=backend.replacement(backend.replacement(SCRIPT,data),data)
+            self.assertEqual(text.count('# M45 include system settings: yes'),1)
+            self.assertEqual(text.count('backend recovery-refresh'),1)
+            self.assertLess(text.index('backend recovery-refresh'),text.index('borg compact'))
+            self.assertIn('"${backup_sources[@]}"',text)
+            checks=text.split('# M45 source checks\n')[1].split('# End M45 source checks')[0]
+            result=subprocess.run(['/bin/bash','-c','source='+shlex.quote(str(source))+'\n'+checks+'\nprintf "%s\\n" "${backup_sources[@]}"'],check=True,text=True,capture_output=True)
+            paths=result.stdout.splitlines(); self.assertEqual(paths,[str(source),str(settings)])
+            repo=root/'repo'; env=dict(os.environ,BORG_CACHE_DIR=str(root/'cache'),BORG_SECURITY_DIR=str(root/'security'))
+            subprocess.run(['borg','init','--encryption=none',str(repo)],env=env,check=True,capture_output=True)
+            subprocess.run(['borg','create',str(repo)+'::coverage',*paths],env=env,check=True,capture_output=True)
+            contents=subprocess.run(['borg','list','--format','{path}{NL}',str(repo)+'::coverage'],env=env,check=True,capture_output=True,text=True).stdout
+            self.assertIn('personal.txt',contents); self.assertIn('service.conf',contents)
 
     def test_disconnected_destination_does_not_create_repository_on_parent_filesystem(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,8 +163,12 @@ class BackendTests(unittest.TestCase):
                 return subprocess.run(args,check=True,capture_output=True,text=True,env=env,timeout=30).stdout
             with patch.object(backend,'run',side_effect=run):
                 backend.configure_destination(data,{},source)
-                self.assertTrue((destination/'config').is_file())
                 self.assertTrue((destination/'.m45-drive-backuper').is_file())
+                # A valid repository from an earlier installation remains reusable.
+                (destination/'.m45-drive-backuper').unlink()
+                backend.configure_destination(data,{},source)
+                self.assertTrue((destination/'config').is_file())
+                self.assertFalse((destination/'.m45-drive-backuper').exists())
                 self.assertEqual(data['mountpoint'],str(root))
                 backend.configure_destination(data,{},source)
                 text=backend.replacement(SCRIPT,data)
