@@ -30,6 +30,7 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QSet>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -56,6 +57,16 @@ QIcon statusIcon(const QString &state) {
     return QIcon(pix);
 }
 QString stamp(const QString &text) { return text.isEmpty() ? "Unavailable" : text; }
+QSet<QString> exclusionRules(const QString &text) {
+    QSet<QString> rules;
+    for (const auto &line : text.split('\n')) if (!line.trimmed().isEmpty() && !line.trimmed().startsWith('#')) rules.insert(line.trimmed());
+    return rules;
+}
+QString exclusionChanges(const QString &saved, const QString &edited) {
+    const auto before = exclusionRules(saved), after = exclusionRules(edited);
+    const int added = (after-before).size(), removed = (before-after).size();
+    return added || removed ? QString("Exclusions: %1 added, %2 removed.").arg(added).arg(removed) : QString();
+}
 QString startupPath() { return QStandardPaths::writableLocation(QStandardPaths::ConfigLocation) + "/autostart/io.github.m45drivebackuper.desktop"; }
 QLabel *label(const QString &text = {}) {
     auto *l = new QLabel(text); l->setTextFormat(Qt::PlainText); l->setWordWrap(true); l->setTextInteractionFlags(Qt::TextSelectableByMouse); return l;
@@ -73,6 +84,9 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     m_tabs = new QTabWidget; outer->addWidget(m_tabs, 1); setCentralWidget(body);
     QVBoxLayout *layout;
     page(m_tabs, "Overview", layout);
+    auto *overviewScroll = new QScrollArea; overviewScroll->setWidgetResizable(true); overviewScroll->setFrameShape(QFrame::NoFrame);
+    auto *overviewBody = new QWidget; auto *overviewLayout = new QVBoxLayout(overviewBody); overviewLayout->setContentsMargins(0,0,8,0); overviewLayout->setSpacing(14);
+    overviewScroll->setWidget(overviewBody); layout->addWidget(overviewScroll); layout = overviewLayout;
     m_status = label("Reading backup status…"); font = m_status->font(); font.setPointSize(17); font.setBold(true); m_status->setFont(font); layout->addWidget(m_status);
     m_summary = label(); layout->addWidget(m_summary);
     auto *group = new QGroupBox("Backup plan"); auto *form = new QFormLayout(group); form->setVerticalSpacing(16);
@@ -159,6 +173,9 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     m_includeSystem = new QCheckBox("Also include system settings and local software"); m_includeSystem->setObjectName("includeSystem");
     m_includeSystem->setToolTip("Includes /etc, /usr/local, /root, scheduled jobs, package records, network and account settings. Other drives and service databases are not included.");
     settingsForm->addRow("",m_includeSystem);
+    m_packageRecovery = new QCheckBox("Include package recovery file in every backup"); m_packageRecovery->setObjectName("packageRecovery");
+    m_packageRecovery->setToolTip("Automatically refresh package names, versions and reinstall information, then store the file in the same backup snapshot. Applies to scheduled and manual backups. Save changes to enable or disable it.");
+    settingsForm->addRow("",m_packageRecovery);
     m_destinationKind = new QComboBox; m_destinationKind->setObjectName("destinationKind");
     m_destinationKind->addItem("A folder","folder"); m_destinationKind->addItem("This drive","drive"); settingsForm->addRow("Save backups to",m_destinationKind);
     auto *destinationRow = new QWidget; auto *destinationLayout = new QHBoxLayout(destinationRow); destinationLayout->setContentsMargins(0,0,0,0);
@@ -230,9 +247,6 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     m_autoMount = new QCheckBox("Mount configured drives when needed"); m_autoMount->setObjectName("autoMount");
     m_autoMount->setToolTip("Before a backup, try existing /etc/fstab entries for the source and destination. UUIDs are checked before and after mounting. Drives must be connected and unlocked; new mount definitions are not created.");
     advancedForm->addRow("",m_autoMount);
-    m_packageRecovery = new QCheckBox("Save a software recovery list with each backup"); m_packageRecovery->setObjectName("packageRecovery");
-    m_packageRecovery->setToolTip("Records APT package selections and versions, Snap and Flatpak inventories, enabled services and timers. Reinstall APT packages from an exported recovery file in Preferences.");
-    advancedForm->addRow("",m_packageRecovery);
 
     auto spin = [] {auto *s = new QSpinBox; s->setRange(0,365); return s;};
     m_hourly = spin(); m_daily = spin(); m_weekly = spin(); m_monthly = spin();
@@ -254,10 +268,13 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     connect(advancedToggle,&QToolButton::toggled,this,[advanced,advancedToggle](bool expanded) {advanced->setVisible(expanded); advancedToggle->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);});
     layout->addStretch();
     page(m_tabs, "Skip files", layout); m_exclusionsPage = m_tabs->widget(4);
+    auto *skipScroll = new QScrollArea; skipScroll->setWidgetResizable(true); skipScroll->setFrameShape(QFrame::NoFrame);
+    auto *skipBody = new QWidget; auto *skipLayout = new QVBoxLayout(skipBody); skipLayout->setContentsMargins(0,0,8,0); skipLayout->setSpacing(12);
+    skipScroll->setWidget(skipBody); layout->addWidget(skipScroll); layout = skipLayout;
     m_excludes = new ExclusionEditor(m_demo); layout->addWidget(m_excludes,1);
-    m_skipCaches = new QCheckBox("Also skip folders marked as disposable cache"); m_skipCaches->setToolTip("Uses CACHEDIR.TAG markers. The file and folder rules above still apply."); layout->addWidget(m_skipCaches);
-    auto *analyzer = new QGroupBox("Find large folders before choosing what to skip"); auto *analyzerLayout = new QHBoxLayout(analyzer);
-    auto *analyzerText = label("K4DirStat shows which folders use the most space. Inspect your source there, then add unwanted folders to this list.");
+    m_skipCaches = new QCheckBox("Also skip marked cache folders (extra rule)"); m_skipCaches->setToolTip("This adds Borg’s CACHEDIR.TAG cache rule to the exclusion list above. It is separate from the displayed rule count."); layout->addWidget(m_skipCaches);
+    auto *analyzer = new QWidget; auto *analyzerLayout = new QHBoxLayout(analyzer); analyzerLayout->setContentsMargins(0,0,0,0);
+    auto *analyzerText = label("Find large folders with K4DirStat, then choose what to skip.");
     auto *openAnalyzer = new QPushButton("Open K4DirStat…"); openAnalyzer->setObjectName("openAnalyzer");
     analyzerLayout->addWidget(analyzerText,1); analyzerLayout->addWidget(openAnalyzer); layout->addWidget(analyzer);
     connect(openAnalyzer,&QPushButton::clicked,this,&Window::openAnalyzer);
@@ -267,6 +284,9 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
         updateEditState();
     });
     page(m_tabs, "Preferences", layout);
+    auto *preferencesScroll = new QScrollArea; preferencesScroll->setWidgetResizable(true); preferencesScroll->setFrameShape(QFrame::NoFrame);
+    auto *preferencesBody = new QWidget; auto *preferencesLayout = new QVBoxLayout(preferencesBody); preferencesLayout->setContentsMargins(0,0,8,0); preferencesLayout->setSpacing(14);
+    preferencesScroll->setWidget(preferencesBody); layout->addWidget(preferencesScroll); layout = preferencesLayout;
     layout->addWidget(label("Desktop monitoring"));
     m_startup = new QCheckBox("Start tray monitor at login"); m_notifications = new QCheckBox("Notify when backup status needs attention");
     bool startup = true; QFile startupFile(startupPath()); if (startupFile.open(QIODevice::ReadOnly)) startup = !startupFile.readAll().contains("Hidden=true");
@@ -275,9 +295,15 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     connect(m_startup,&QCheckBox::toggled,this,&Window::setStartup);
     connect(m_notifications,&QCheckBox::toggled,this,[this](bool on) {if (!m_demo) m_settings.setValue("notifications",on);});
     auto *recoveryBox = new QGroupBox("Software recovery"); auto *recoveryLayout = new QVBoxLayout(recoveryBox);
-    recoveryLayout->addWidget(label("Save your package selections in one file. On a matching OS release, review a reinstall plan before installing APT packages. Snap, Flatpak and service lists are included for reference."));
+    m_recoveryStatus = label("Reading saved recovery settings…"); m_recoveryStatus->setObjectName("recoveryStatus");
+    auto recoveryFont = m_recoveryStatus->font(); recoveryFont.setBold(true); m_recoveryStatus->setFont(recoveryFont); recoveryLayout->addWidget(m_recoveryStatus);
+    m_recoveryToggle = new QCheckBox("Include package recovery file in every backup"); m_recoveryToggle->setObjectName("recoveryToggle"); recoveryLayout->addWidget(m_recoveryToggle);
+    recoveryLayout->addWidget(label("When enabled, every scheduled or manual backup refreshes the package list and saves it in that snapshot. Uncheck this option and Save changes to turn off automatic recovery creation. Existing backups and exported copies are kept."));
+    connect(m_packageRecovery,&QCheckBox::toggled,this,[this](bool checked) {QSignalBlocker blocker(m_recoveryToggle); m_recoveryToggle->setChecked(checked);});
+    connect(m_recoveryToggle,&QCheckBox::toggled,m_packageRecovery,&QCheckBox::setChecked);
+    recoveryLayout->addWidget(label("Export saves an extra portable copy now. Reinstall previews APT changes on a matching OS release. Snap, Flatpak and service lists are included for reference."));
     auto *recoveryButtons = new QHBoxLayout;
-    m_exportRecovery = new QPushButton("Export recovery file…"); m_exportRecovery->setObjectName("exportRecovery");
+    m_exportRecovery = new QPushButton("Export an extra recovery copy…"); m_exportRecovery->setObjectName("exportRecovery");
     m_restorePackages = new QPushButton("Reinstall from recovery file…"); m_restorePackages->setObjectName("restorePackages");
     recoveryButtons->addWidget(m_exportRecovery); recoveryButtons->addWidget(m_restorePackages); recoveryButtons->addStretch(); recoveryLayout->addLayout(recoveryButtons); layout->addWidget(recoveryBox);
     connect(m_exportRecovery,&QPushButton::clicked,this,[this] {action("recovery-export");});
@@ -329,7 +355,7 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     if (m_demo) {
         m_snapshot = {{"collected_at",QDateTime::currentSecsSinceEpoch()}, {"mounted",false},
             {"actual_mounts",QJsonArray{"/media/dist/Backup-SSD"}},
-            {"config",QJsonObject{{"mountpoint","/media/dist/43b29217-193a-4f61-99ff-01a137b0c8f2"},{"uuid","43b29217-193a-4f61-99ff-01a137b0c8f2"},{"hours",6},{"hourly",4},{"daily",7},{"weekly",4},{"monthly",6},{"excludes","# Caches and regenerable downloads\npp:home/dist/Downloads\npp:home/dist/.cache\nsh:home/dist/**/node_modules"}}},
+            {"config",QJsonObject{{"mountpoint","/media/dist/43b29217-193a-4f61-99ff-01a137b0c8f2"},{"uuid","43b29217-193a-4f61-99ff-01a137b0c8f2"},{"hours",6},{"hourly",4},{"daily",7},{"weekly",4},{"monthly",6},{"include_system",true},{"package_recovery",true},{"excludes","# Caches and regenerable downloads\npp:home/dist/Downloads\npp:home/dist/.cache\nsh:home/dist/**/node_modules"}}},
             {"service",QJsonObject{{"ActiveState","failed"},{"Result","exit-code"},{"ExecMainExitTimestamp","Sun 2026-11-08 06:03:58 MST"}}},
             {"timer",QJsonObject{{"ActiveState","active"},{"NextElapseUSecRealtime","Sun 2026-11-08 12:03:44 MST"}}},
             {"logs","2026-11-08T06:03:58 Backup failed: expected backup filesystem is not mounted.\n2026-11-08T06:03:58 local-system-backup.service: Failed with result 'exit-code'."}};
@@ -489,6 +515,8 @@ void Window::setBusy(bool busy) {
     updateEditState();
     m_startup->setEnabled(!m_demo); m_notifications->setEnabled(!m_demo);
     m_exportRecovery->setEnabled(available); m_restorePackages->setEnabled(available);
+    m_recoveryToggle->setEnabled(m_loaded && !busy);
+    updateRecoveryStatus();
 }
 
 void Window::action(const QString &name, const QString &payload) {
@@ -554,6 +582,9 @@ void Window::saveSettings() {
         .arg(m_source->text(),m_repository->text(),m_interval->currentText(),m_excludes->summary());
     if (m_includeSystem->isChecked()) summary += "\n\nAlso includes system settings, local software, administrator files, scheduled jobs and package records.";
     if (m_packageRecovery->isChecked()) summary += "\nA software recovery list will be refreshed with each backup.";
+    else summary += "\nAutomatic package recovery will be disabled for future backups.";
+    const auto exclusionDelta = exclusionChanges(m_savedPlan.value("excludes").toString(),m_excludes->text());
+    if (!exclusionDelta.isEmpty()) summary += "\n\n" + exclusionDelta;
     if (data.value("repository") != m_savedPlan.value("repository")) summary += "\n\nExisting Borg backups in this folder will be reused, including the saved cleanup policy. An empty folder will be initialized as an unencrypted repository. Previous backup folders are kept.";
     bool retentionChanged = false;
     for (const auto &key : {"hourly","daily","weekly","monthly"}) retentionChanged |= data.value(key) != m_savedPlan.value(key);
@@ -583,14 +614,27 @@ void Window::closeEvent(QCloseEvent *event) {event->ignore(); if (m_demo || !QSy
 
 void Window::updateEditState() {
     if (m_loading || !m_loaded) return;
+    updateRecoveryStatus();
     const bool dirty = configuration() != m_savedPlan;
     const auto active = m_snapshot.value("service").toObject().value("ActiveState").toString();
     const bool running = active == "active" || active == "activating" || active == "deactivating";
     m_changes->setText(dirty ? (m_demo ? "Preview edits · no changes are written" : "Unsaved changes · backups still use the saved plan") : "Backup plan is up to date");
+    const auto exclusionDelta = exclusionChanges(m_savedPlan.value("excludes").toString(),m_excludes->text());
+    if (!exclusionDelta.isEmpty()) m_changes->setText(m_changes->text() + "\n" + exclusionDelta);
     m_save->setEnabled(dirty && !m_busy && !running && (m_demo || !m_snapshot.isEmpty()));
     m_discard->setEnabled(dirty && !m_busy);
     m_editBar->setVisible(dirty || m_tabs->currentIndex() == 1 || m_tabs->currentIndex() == 2);
     setWindowModified(dirty); setWindowTitle("M45 Drive Backuper[*]");
+}
+
+void Window::updateRecoveryStatus() {
+    const auto config = m_snapshot.value("config").toObject();
+    if (config.isEmpty()) {m_recoveryStatus->setText("Saved recovery status is unavailable. Check Overview."); return;}
+    const bool saved = config.value("package_recovery").toBool();
+    QString text = saved ? "Saved plan: package recovery is included in every backup." : "Saved plan: automatic package recovery is off.";
+    if (saved && m_snapshot.value("timer").toObject().value("ActiveState") != "active") text += "\nThe automatic backup schedule is currently paused.";
+    if (m_loaded && saved != m_packageRecovery->isChecked()) text += m_packageRecovery->isChecked() ? "\nUnsaved change: enable package recovery. Save changes to apply." : "\nUnsaved change: disable package recovery. Save changes to apply.";
+    m_recoveryStatus->setText(text);
 }
 
 void Window::renderLog() {

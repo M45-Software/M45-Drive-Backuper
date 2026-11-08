@@ -26,7 +26,7 @@ private:
     bool m_preview;
     QPlainTextEdit *m_raw;
     QTreeWidget *m_list;
-    QLabel *m_summary, *m_sourceLabel;
+    QLabel *m_summary, *m_sourceLabel, *m_matches;
     QLineEdit *m_filter;
     void refresh();
 };

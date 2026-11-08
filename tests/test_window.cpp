@@ -40,6 +40,7 @@ private slots:
         QVERIFY(advanced->isHidden());
         QVERIFY(!window.findChild<QComboBox *>("compression")->isVisible());
         QVERIFY(!window.findChild<QComboBox *>("backupType")->isVisible());
+        QVERIFY(window.findChild<QCheckBox *>("packageRecovery")->isVisible());
         const auto folderDestination = window.findChild<QLineEdit *>("repositoryPath")->text();
         window.findChild<QComboBox *>("destinationKind")->setCurrentIndex(1);
         auto *dest = window.findChild<QComboBox *>("destinationDrive"); dest->setCurrentIndex(1);
@@ -88,6 +89,38 @@ private slots:
         window.close(); QVERIFY(!window.isVisible());
         settings.sync(); QCOMPARE(settings.value("lastNotification").toString(),QString("sentinel"));
         QCOMPARE(settings.value("notifications").toBool(),false);
+    }
+    void recoveryControlsDistinguishSavedSettingsFromUnsavedEdits() {
+        Window window(true); window.Show(); window.selectPage(5); QTest::qWait(10);
+        auto *toggle=window.findChild<QCheckBox *>("recoveryToggle");
+        auto *plan=window.findChild<QCheckBox *>("packageRecovery");
+        auto *status=window.findChild<QLabel *>("recoveryStatus");
+        QVERIFY(toggle->isVisible()); QVERIFY(toggle->isChecked()); QVERIFY(plan->isChecked());
+        QVERIFY(status->text().contains("included in every backup"));
+        toggle->click(); QVERIFY(!plan->isChecked());
+        QVERIFY(status->text().contains("Saved plan: package recovery is included"));
+        QVERIFY(status->text().contains("Unsaved change: disable"));
+        QVERIFY(window.findChild<QPushButton *>("saveSettings")->isEnabled());
+        plan->setChecked(true); QVERIFY(toggle->isChecked()); QVERIFY(!status->text().contains("Unsaved"));
+        QVERIFY(!window.findChild<QPushButton *>("saveSettings")->isEnabled());
+    }
+    void exclusionCountSurvivesFilteringAndTheListStaysUsable() {
+        struct FontReset {QFont font; ~FontReset() {qApp->setFont(font);}} reset{qApp->font()};
+        auto large=reset.font; large.setPointSize(14); qApp->setFont(large);
+        Window window(true); window.resize(1000,790); window.Show(); window.selectPage(2);
+        auto *editor=window.findChild<ExclusionEditor *>();
+        QString rules; for (int i=0;i<17;++i) rules+=QString("pp:home/dist/folder%1\n").arg(i);
+        for (int i=0;i<11;++i) rules+=QString("sh:home/dist/**/cache%1\n").arg(i);
+        editor->setText(rules); QTest::qWait(20);
+        auto *list=editor->findChild<QTreeWidget *>(); QVERIFY(list->height()>=180);
+        QVERIFY2(window.height()<=790,qPrintable(QString("Window grew to %1 pixels").arg(window.height())));
+        QVERIFY(editor->summary().contains("28 exclusion rules"));
+        auto *search=editor->findChild<QLineEdit *>("exclusionFilter"); search->setText("no-match");
+        QVERIFY(editor->summary().contains("28 exclusion rules"));
+        QVERIFY(editor->findChild<QLabel *>("exclusionMatches")->text().contains("Showing 0 of 28"));
+        QCOMPARE(editor->text(),rules); search->clear();
+        QCOMPARE(list->topLevelItemCount(),28);
+        QVERIFY(editor->findChild<QLabel *>("exclusionMatches")->text().contains("All 28 rules"));
     }
     void exclusionsPreserveExistingRulesAndLiteralPaths() {
         ExclusionEditor editor; editor.setSource("/home/example");

@@ -31,9 +31,9 @@ Storage limits are in GiB. “Leave free” is a preflight check after cleanup, 
 
 **Also include system settings and local software** adds `/etc`, `/usr/local`, `/root`, `/var/spool/cron`, `/var/lib/dpkg`, `/var/lib/apt/extended_states`, `/var/lib/NetworkManager`, `/var/lib/bluetooth`, and `/var/lib/AccountsService` when present. These may contain passwords and private keys and inherit the selected repository’s encryption. Other data drives and service databases are outside this selection. Skip files also accepts paths in these additional sources.
 
-**Save a software recovery list with each backup** refreshes `/var/lib/m45-drive-backuper/recovery/software-recovery.json` before archive creation. The recovery directory is included in that snapshot. The format follows the inspected M45 `restore-manifest` output convention: OS release, installed package versions, manual APT selections, held packages, Snap/Flatpak inventories, and enabled services/timers. Optional inventory failures are recorded as warnings rather than silently omitted. APT inventory failure stops the job before cleanup.
+**Include package recovery file in every backup** is visible in both **Backup plan** and **Preferences → Software recovery**. Both checkboxes edit the same setting; **Save changes** applies it. The saved-state message stays explicit while an enable/disable change is pending. When enabled, each backup refreshes `/var/lib/m45-drive-backuper/recovery/software-recovery.json` before archive creation. The recovery directory is included in that snapshot. The format follows the inspected M45 `restore-manifest` output convention: OS release, installed package versions, manual APT selections, held packages, Snap/Flatpak inventories, and enabled services/timers. Optional inventory failures are recorded as warnings rather than silently omitted. APT inventory failure stops the job before cleanup.
 
-Under **Preferences → Software recovery**, **Export recovery file…** creates a portable JSON file. **Reinstall from recovery file…** validates the file and OS release/architecture, runs an APT simulation, and shows its details before administrator authentication and installation. It installs manual selections and their dependencies from the current repositories, without allowing package removals. Review repository sources and signing keys from the `/etc` backup first. Saved versions are reference information; unavailable third-party packages need their original repository or installer. Held-package, Snap, Flatpak, service and timer lists are for separate review and restoration; they are not automatically applied. The file contains inventory, not user data or package binaries. Cancellation before installation makes no package changes; a package-manager failure during installation may leave partial changes, which the app reports.
+Under **Preferences → Software recovery**, **Export an extra recovery copy…** creates a separate portable JSON file. This export is optional; automatic backups already contain the recovery file when the saved setting is enabled. **Reinstall from recovery file…** validates the file and OS release/architecture, runs an APT simulation, and shows its details before administrator authentication and installation. It installs manual selections and their dependencies from the current repositories, without allowing package removals. Review repository sources and signing keys from the `/etc` backup first. Saved versions are reference information; unavailable third-party packages need their original repository or installer. Held-package, Snap, Flatpak, service and timer lists are for separate review and restoration; they are not automatically applied. The file contains inventory, not user data or package binaries. Cancellation before installation makes no package changes; a package-manager failure during installation may leave partial changes, which the app reports.
 
 ## Drive mounting and notifications
 
@@ -44,7 +44,7 @@ The tray shows running, completed and attention states. Notifications cover fail
 ## Choosing what to skip
 
 1. Choose a source folder or mounted drive in **Backup plan**.
-2. Open **Skip files**. Existing exclusions are already listed, including advanced rules.
+2. Open **Skip files**. Existing exclusions are already listed, including advanced rules. The total rule count stays visible while searching, with a separate count of matching rows. Folder rules cover their contents, and a single pattern can exclude many folders. The marked-cache checkbox adds a separate rule beyond this count.
 3. Use **Skip a folder…** or **Skip files…** to select unwanted data. A folder selection excludes that folder and its contents; a file selection matches that exact name, including characters such as `*` and `[`.
 4. Use **Open K4DirStat…** to inspect large folders, then return to choose exclusions. K4DirStat is optional and runs as your desktop user. See the [K4DirStat manual](https://manpages.ubuntu.com/manpages/noble/man1/k4dirstat.1.html).
 5. **Save changes…** shows a short plan summary and expandable technical details before authentication.
@@ -63,7 +63,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 (cd build && cpack -G DEB)
-sudo apt install ./build/m45-drive-backuper_0.3.0_amd64.deb
+sudo apt install ./build/m45-drive-backuper_0.3.1_amd64.deb
 m45-drive-backuper --show
 ```
 

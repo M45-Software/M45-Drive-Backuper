@@ -13,23 +13,28 @@
 
 ExclusionEditor::ExclusionEditor(bool preview, QWidget *parent) : QWidget(parent), m_preview(preview) {
     auto *layout = new QVBoxLayout(this); layout->setContentsMargins(0,0,0,0); layout->setSpacing(10);
-    auto *intro = new QLabel("Skip files and folders you don’t need in future backups. Your original files stay on disk."); intro->setWordWrap(true); layout->addWidget(intro);
+    auto *intro = new QLabel("Choose what to leave out of future backups. Your original files stay on disk."); intro->setWordWrap(true); layout->addWidget(intro);
     m_sourceLabel = new QLabel; m_sourceLabel->setTextFormat(Qt::PlainText); m_sourceLabel->setWordWrap(true); layout->addWidget(m_sourceLabel);
+    m_summary = new QLabel; m_summary->setObjectName("exclusionSummary"); m_summary->setTextFormat(Qt::PlainText); m_summary->setWordWrap(true);
+    auto font = m_summary->font(); font.setBold(true); m_summary->setFont(font); layout->addWidget(m_summary);
     auto *buttons = new QHBoxLayout;
     auto *folder = new QPushButton("Skip a folder…"); folder->setObjectName("skipFolder");
     auto *file = new QPushButton("Skip files…");
     auto *remove = new QPushButton("Include selected again"); remove->setObjectName("includeAgain"); remove->setEnabled(false);
     buttons->addWidget(folder); buttons->addWidget(file); buttons->addStretch(); buttons->addWidget(remove); layout->addLayout(buttons);
     m_list = new QTreeWidget; m_list->setObjectName("exclusionList"); m_list->setHeaderLabels({"Skipped item or rule", "Applies to"});
+    m_list->setMinimumHeight(180);
     m_list->setRootIsDecorated(false); m_list->setAlternatingRowColors(true); m_list->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_list->header()->setSectionResizeMode(0,QHeaderView::Stretch); m_list->header()->setSectionResizeMode(1,QHeaderView::ResizeToContents);
-    m_filter = new QLineEdit; m_filter->setObjectName("exclusionFilter"); m_filter->setPlaceholderText("Find a skipped folder or rule…"); m_filter->setClearButtonEnabled(true); layout->addWidget(m_filter);
+    m_filter = new QLineEdit; m_filter->setObjectName("exclusionFilter"); m_filter->setPlaceholderText("Search all exclusion rules…"); m_filter->setClearButtonEnabled(true); layout->addWidget(m_filter);
+    m_matches = new QLabel; m_matches->setObjectName("exclusionMatches"); m_matches->setWordWrap(true); layout->addWidget(m_matches);
     layout->addWidget(m_list,1);
-    m_summary = new QLabel; m_summary->setTextFormat(Qt::PlainText); m_summary->setWordWrap(true); layout->addWidget(m_summary);
-    auto *note = new QLabel("Including an item again removes its selected rule. A broader folder or advanced rule may still skip it. Old snapshots keep their contents until retention removes them."); note->setWordWrap(true); layout->addWidget(note);
     auto *toggle = new QToolButton; toggle->setText("Advanced patterns and comments"); toggle->setCheckable(true); toggle->setArrowType(Qt::RightArrow); toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon); layout->addWidget(toggle);
-    m_raw = new QPlainTextEdit; m_raw->setObjectName("exclusionPatterns"); m_raw->setPlaceholderText("One Borg exclusion pattern per line"); m_raw->setMaximumHeight(150); layout->addWidget(m_raw); m_raw->hide();
-    connect(toggle,&QToolButton::toggled,this,[this,toggle](bool open) {m_raw->setVisible(open); toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);});
+    auto *details = new QWidget; auto *detailLayout = new QVBoxLayout(details); detailLayout->setContentsMargins(0,0,0,0);
+    auto *note = new QLabel("Including an item again removes its selected rule. Another matching rule may still skip it. Changes affect future backups; existing snapshots keep their contents. Comments below are preserved and do not count as exclusion rules."); note->setWordWrap(true); detailLayout->addWidget(note);
+    m_raw = new QPlainTextEdit; m_raw->setObjectName("exclusionPatterns"); m_raw->setPlaceholderText("One Borg exclusion pattern per line"); m_raw->setMaximumHeight(150); detailLayout->addWidget(m_raw);
+    layout->addWidget(details); details->hide();
+    connect(toggle,&QToolButton::toggled,this,[details,toggle](bool open) {details->setVisible(open); toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);});
     connect(m_raw,&QPlainTextEdit::textChanged,this,[this] {refresh(); emit changed();});
     connect(m_filter,&QLineEdit::textChanged,this,&ExclusionEditor::refresh);
     connect(m_list,&QTreeWidget::itemSelectionChanged,this,[this,remove] {remove->setEnabled(!m_list->selectedItems().isEmpty());});
@@ -71,12 +76,13 @@ void ExclusionEditor::removeSelected() {
     setText(raw.join('\n'));
 }
 void ExclusionEditor::refresh() {
-    m_sourceLabel->setText("Backup source: " + m_source + (m_additionalSources.isEmpty() ? "" : "\nAlso included: " + m_additionalSources.join(", ")));
-    m_list->clear(); int paths = 0, rules = 0, outside = 0;
+    m_sourceLabel->setText("Source: " + m_source + (m_additionalSources.isEmpty() ? "" : " + system settings and local software"));
+    m_sourceLabel->setToolTip("Included sources:\n" + m_source + "\n" + m_additionalSources.join('\n'));
+    m_list->clear(); int paths = 0, rules = 0, outside = 0, visible = 0;
     const auto lines = text().split('\n');
     for (int i=0;i<lines.size();++i) {
         const auto rule = lines[i].trimmed(); if (rule.isEmpty() || rule.startsWith('#')) continue;
-        QString title = rule, applies = "Pattern rule";
+        QString title = rule, applies = "Pattern · can match many paths";
         if (rule.startsWith("pp:") || rule.startsWith("pf:")) {
             title = '/' + rule.mid(3); if (rule.mid(3).startsWith('/')) title = rule.mid(3);
             applies = rule.startsWith("pp:") ? "Folder and contents" : "This file"; ++paths;
@@ -91,6 +97,12 @@ void ExclusionEditor::refresh() {
         }
         auto *item = new QTreeWidgetItem(m_list,{title,applies}); item->setData(0,Qt::UserRole,i); item->setToolTip(0,rule); item->setToolTip(1,rule);
         item->setHidden(!m_filter->text().isEmpty() && !title.contains(m_filter->text(),Qt::CaseInsensitive) && !rule.contains(m_filter->text(),Qt::CaseInsensitive));
+        if (!item->isHidden()) ++visible;
     }
-    m_summary->setText(QString("%1 file/folder exclusions · %2 pattern rules%3").arg(paths).arg(rules).arg(outside ? QString(" · %1 paths outside the selected source").arg(outside) : QString()));
+    m_summary->setText(QString("%1 exclusion %2 · %3 file/folder%4 · %5 pattern%6%7")
+        .arg(paths+rules).arg(paths+rules == 1 ? "rule" : "rules").arg(paths).arg(paths == 1 ? "" : "s")
+        .arg(rules).arg(rules == 1 ? "" : "s").arg(outside ? QString(" · %1 paths outside the selected source").arg(outside) : QString()));
+    m_matches->setText(m_filter->text().isEmpty()
+        ? (paths+rules ? QString("All %1 rules are listed below. Folders include their contents; patterns can match many folders.").arg(paths+rules) : "No file or pattern rules. The marked-cache setting below is separate.")
+        : QString("Showing %1 of %2 rules. Clear the search to see all exclusions.").arg(visible).arg(paths+rules));
 }
