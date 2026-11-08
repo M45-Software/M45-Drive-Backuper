@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=M45 Drive Backuper
+Comment=Monitor Borg backups in the system tray
+Exec=m45-drive-backuper
+Icon=m45-drive-backuper
+Terminal=false
+X-KDE-autostart-after=panel

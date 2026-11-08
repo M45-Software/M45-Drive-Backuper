@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=M45 Drive Backuper
+GenericName=Borg Backup Manager
+Comment=Configure and monitor home backups
+Exec=m45-drive-backuper --show
+Icon=m45-drive-backuper
+Terminal=false
+Categories=System;Archiving;
+Keywords=borg;backup;monitor;
+StartupNotify=false
+X-KDE-autostart-after=panel
