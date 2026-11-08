@@ -17,11 +17,11 @@ int main(int argc, char **argv) {
     args.addHelpOption(); args.addVersionOption();
     args.addOption({"show", "Open the backup overview."});
     args.addOption({"demo", "Preview synthetic data without changing the machine."});
-    args.addOption({"page", "Open overview, archives, journal or settings.", "page", "overview"});
+    args.addOption({"page", "Open overview, settings, exclusions, archives, journal or preferences.", "page", "overview"});
     args.addOption({"screenshot", "Save a preview screenshot and exit (requires --demo).", "file"});
     args.process(app);
     if (args.isSet("screenshot") && !args.isSet("demo")) args.showHelp(2);
-    int page = QStringList{"overview", "archives", "journal", "settings"}.indexOf(args.value("page"));
+    int page = QStringList{"overview", "settings", "exclusions", "archives", "journal", "preferences"}.indexOf(args.value("page"));
     if (page < 0) args.showHelp(2);
     auto bus = QDBusConnection::sessionBus();
     if (!args.isSet("demo")) {
@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
     Window window(args.isSet("demo"));
     if (!args.isSet("demo")) bus.registerObject("/M45DriveBackuper", &window, QDBusConnection::ExportAllSlots);
     window.selectPage(page);
-    if (args.isSet("show") || args.isSet("demo")) window.Show();
+    if (args.isSet("show") || args.isSet("demo") || !QSystemTrayIcon::isSystemTrayAvailable()) window.Show();
     if (args.isSet("screenshot")) QTimer::singleShot(500, &app, [&] {
         app.exit(window.grab().save(args.value("screenshot")) ? 0 : 1);
     });

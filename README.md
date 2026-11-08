@@ -7,14 +7,44 @@ A native Qt 6 KDE Plasma tray app for configuring and monitoring this machine's 
 - System tray status, click-to-open menu, backup shortcut, settings and journal.
 - Overview shows the service result, next scheduled run, destination UUID and available space.
 - Detects the existing backup filesystem at a different mount path. The user can choose its detected path and review the change before saving.
-- Configure schedule (1/2/3/4/6/8/12 hours or daily), hourly/daily/weekly/monthly retention, and Borg exclusions.
+- Simple setup: choose what to back up, **A folder** or **This drive** as destination, and a schedule. Detailed options stay collapsed.
+- The folder chooser supports **New Folder**, and you can type a new folder path. Drive selection shows the exact backup folder. Switching choices keeps your folder entry; drive lists refresh with status without replacing your edits.
+- Incremental snapshots or a full file scan, five compression presets, a minimum free-space check and an optional repository data limit.
+- A dedicated **Skip files** page: pick files or folders, search existing exclusions, and include selected items again. Comments and advanced Borg rules are preserved.
+- Direct **Open K4DirStat** shortcut for finding large folders in the selected source, with installation instructions if unavailable.
+- Backup mode, compression, storage limits, mounting and retention stay under Advanced. **Use recommended settings** chooses incremental snapshots, balanced compression, a 10 GiB preflight reserve, automatic mounting, cache skipping and 4 hourly / 7 daily / 4 weekly / 6 monthly retention. Existing storage quotas and exclusions are preserved.
+- Unsaved-change tracking, discard and review controls, and a quit warning protect unfinished edits.
+- A sortable saved-backup catalog, checkpoint labels, searchable activity, and desktop preferences.
 - Start a backup, enable/disable its existing timer, and read the repository archive catalog.
 - Login startup toggle, attention notifications and Qt desktop colors.
 - Read-only monitoring uses the desktop user's journal permissions. Administrative actions use `pkexec` with a root-owned fixed-purpose helper; the GUI never runs as root.
 
 Opening or installing M45 Drive Backuper does **not** modify the backup script, schedule, exclusions, repository or mounts, and does not run a backup. All backup changes are explicit app actions. Settings saves show a review dialog, validate values and the destination UUID, reject changes during an active backup, save recovery copies under `/var/lib/m45-drive-backuper/settings-backups/`, and atomically replace each file. A failed save restores previous files. Schedule changes retain the existing boot trigger and randomized delay. Turning off the schedule allows an active run to finish.
 
-This release adapts `/usr/local/sbin/local-system-backup`, `/etc/local-system-backup.exclude`, and `local-system-backup.{service,timer}`. It recognizes that script's current structure and refuses unsupported formats. It is not yet a general-purpose repository setup wizard. The source is `/home/dist`; destination UUID, compression, free-space threshold and the backup implementation remain managed by the existing script. It does not initialize repositories, mount disks, restore files, change encryption, or run pruning independently.
+This release adapts `/usr/local/sbin/local-system-backup`, `/etc/local-system-backup.exclude`, and `local-system-backup.{service,timer}`. It recognizes that script's current structure and refuses unsupported formats. The source can be a folder or a mounted filesystem; drive selections are UUID-checked again at backup time. Drives are backed up as files, not bootable disk images. Nested filesystems are skipped. The destination can be an empty local folder or a connected local drive. Drive selection uses a dedicated `M45-Backups` folder (or the existing repository on the already configured drive). Saving initializes an empty destination as an unencrypted Borg repository and marks it for this machine; unrelated nonempty folders are refused. Existing repositories belonging to this machine can be reused. Old repositories are never deleted when switching destinations. The repository itself is excluded from backups. New repositories have owner-only access; the save review explicitly identifies their unencrypted storage. A failed settings save can leave an initialized repository ready for reuse. The app does not restore files, unlock encrypted drives, change encryption, or prune independently.
+
+Incremental mode skips reading files that the file cache identifies as unchanged. Full file scan mode rereads every file with Borg's file cache disabled. Both create complete snapshots with deduplication; neither creates an independent disk image. Compression presets affect newly stored chunks, not existing backup data. “Skip marked cache folders” skips CACHEDIR.TAG-marked directories; explicit advanced exclusions still apply.
+
+Storage limits are in GiB. “Leave free” is a preflight check after cleanup, not a guaranteed reserve during the backup. The storage limit controls Borg repository data, with metadata and temporary-space overhead possible; it is applied at the next backup. Choose “No limit” to remove the quota, “Keep existing limit” to preserve it, or “Limit backup storage to” for a specific cap. Settings saves show these options before requesting authentication.
+
+## Drive mounting and notifications
+
+**Mount configured drives when needed** runs before source checks and backup cleanup. It uses existing `/etc/fstab` entries whose target and UUID match, verifies the UUID again after mounting, and refuses to mount over another filesystem. It supports a source folder on a recorded filesystem as well as a whole source drive. The drives must be connected, and encrypted volumes must already be unlocked. It does not create fstab entries or format disks. A new drive without a matching fstab entry can be used while mounted, but must be mounted through the desktop when disconnected. The tray’s **Mount backup drives** action also uses this path.
+
+The tray shows running, completed and attention states. Notifications cover failed attempts, unavailable destinations or sources, low free space, disabled schedules and monitoring failures. Repeated identical alerts are suppressed; recovery allows a later recurrence to notify again. Notifications require the tray to be running and can be suppressed by desktop Do Not Disturb. The existing system-service failure alert remains available when the tray is closed.
+
+## Choosing what to skip
+
+1. Choose a source folder or mounted drive in **Backup plan**.
+2. Open **Skip files**. Existing exclusions are already listed, including advanced rules.
+3. Use **Skip a folder…** or **Skip files…** to select unwanted data. A folder selection excludes that folder and its contents; a file selection matches that exact name, including characters such as `*` and `[`.
+4. Use **Open K4DirStat…** to inspect large folders, then return to choose exclusions. K4DirStat is optional and runs as your desktop user. See the [K4DirStat manual](https://manpages.ubuntu.com/manpages/noble/man1/k4dirstat.1.html).
+5. **Save changes…** shows a short plan summary and expandable technical details before authentication.
+
+Excluding something affects future backups and does not delete the original. Removing a rule with **Include selected again** does not override other matching rules. Old snapshots retain their contents until retention removes them. A changed source can leave exclusions outside the selected source; those paths are labelled and retained. Custom rules and comments are preserved when using the pickers. Source paths through symlinks must be replaced by their resolved path so exclusion matching stays consistent.
+
+![Skip files](docs/screenshots/exclusions.png)
+![Backup plan](docs/screenshots/settings.png)
 
 ## Build, test and install
 
@@ -25,7 +55,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 (cd build && cpack -G DEB)
-sudo apt install ./build/m45-drive-backuper_0.1.0_amd64.deb
+sudo apt install ./build/m45-drive-backuper_0.2.0_amd64.deb
 m45-drive-backuper --show
 ```
 
@@ -34,9 +64,10 @@ The package adds an Applications menu entry and login autostart. No root backgro
 ```sh
 QT_QPA_PLATFORM=offscreen ./build/m45-drive-backuper --demo --screenshot docs/screenshots/overview.png
 QT_QPA_PLATFORM=offscreen ./build/m45-drive-backuper --demo --page settings --screenshot docs/screenshots/settings.png
+QT_QPA_PLATFORM=offscreen ./build/m45-drive-backuper --demo --page exclusions --screenshot docs/screenshots/exclusions.png
 ```
 
-Demo mode uses synthetic data and never invokes the helper, saves preferences, registers the real D-Bus name, or sends notifications. Screenshot timestamps illustrate the sample failure rather than the current state of a machine.
+Demo mode uses synthetic data. You can edit a plan, choose exclusions and review the result; it never invokes the helper, opens K4DirStat, saves preferences, registers the real D-Bus name, or sends notifications. Screenshot timestamps illustrate the sample failure rather than the current state of a machine.
 
 ## Interpretation and limitations
 

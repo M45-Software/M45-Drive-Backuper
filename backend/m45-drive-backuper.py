@@ -41,25 +41,76 @@ def properties(unit):
 
 def read_config():
     text = SCRIPT.read_text()
-    uuid = re.search(r'^uuid=([a-f0-9-]+)$', text, re.M)
+    uuid = re.search(r'^uuid=([a-fA-F0-9-]+)$', text, re.M)
     mount = re.search(r'^mountpoint=(.+)$', text, re.M)
     retention = re.search(r'--keep-hourly (\d+) --keep-daily (\d+) --keep-weekly (\d+) --keep-monthly (\d+)', text)
     if not uuid or not mount or not retention:
         raise ValueError('Backup script format is unsupported; no changes were made.')
     mountpoint = shlex.split(mount[1])[0].replace('$uuid', uuid[1])
+    repository = re.search(r'^repository=(.+)$', text, re.M)
+    repository = shlex.split(repository[1])[0] if repository else str(Path(mountpoint) / ('borg-home-' + Path('/etc/machine-id').read_text().strip()))
+    destination_kind = re.search(r'^destination_kind=(folder|drive)$', text, re.M)
     interval = INTERVAL.read_text() if INTERVAL.exists() else ''
     match = re.search(r'OnCalendar=\*-\*-\* 00/(\d+):00:00', interval)
     hourly = not interval or 'OnCalendar=hourly' in interval
     daily = 'OnCalendar=daily' in interval
     excludes = EXCLUDES.read_text()
     revision = hashlib.sha256(json.dumps([text, excludes, interval]).encode()).hexdigest()
-    return dict(uuid=uuid[1], mountpoint=mountpoint, hours=int(match[1]) if match else (24 if daily else (1 if hourly else 0)), revision=revision,
+    source = re.search(r'^source=(.+)$', text, re.M)
+    source_kind = re.search(r'^source_kind=(folder|drive)$', text, re.M)
+    source_uuid = re.search(r'^source_uuid=(.+)$', text, re.M)
+    source_mount = re.search(r'^source_mountpoint=(.+)$', text, re.M)
+    compression = re.search(r'--compression (\S+)', text)
+    reserve = re.search(r'\(\( available > (\d+) \)\)', text)
+    quota = re.search(r'^# M45 storage limit GiB: (\d+)$', text, re.M)
+    return dict(uuid=uuid[1], mountpoint=mountpoint, repository=repository, destination_kind=destination_kind[1] if destination_kind else 'folder', hours=int(match[1]) if match else (24 if daily else (1 if hourly else 0)), revision=revision,
                 hourly=int(retention[1]), daily=int(retention[2]), weekly=int(retention[3]), monthly=int(retention[4]),
-                excludes=excludes, source='/home/dist', compression='zstd,3')
+                excludes=excludes, source=shlex.split(source[1])[0] if source else '/home/dist',
+                source_kind=source_kind[1] if source_kind else 'folder',
+                source_uuid=shlex.split(source_uuid[1])[0] if source_uuid else '',
+                source_mountpoint=shlex.split(source_mount[1])[0] if source_mount else '',
+                auto_mount='# M45 auto mount: yes' in text,
+                compression=compression[1] if compression else 'zstd,3',
+                scan_mode='full_scan' if '--files-cache disabled' in text else 'incremental',
+                reserve_gib=int(reserve[1]) // 1073741824 if reserve else 10,
+                quota_gib=int(quota[1]) if quota else -1, exclude_caches='--exclude-caches' in text)
 
 
 def actual_mount(uuid):
-    return run('findmnt', '-rn', '-S', 'UUID=' + uuid, '-o', 'TARGET', check=False).splitlines()
+    output = run('findmnt', '--json', '-S', 'UUID=' + uuid, '-o', 'TARGET', check=False)
+    return [fs['target'] for fs in json.loads(output or '{}').get('filesystems', [])]
+
+
+def mounted_at(target):
+    output = run('findmnt', '--json', '-M', target, '-o', 'TARGET,UUID', check=False)
+    entries = json.loads(output or '{}').get('filesystems', [])
+    return entries[0] if entries else None
+
+
+def ensure_mount(target, uuid):
+    """Mount only an existing fstab entry with the expected UUID and target."""
+    observed = mounted_at(target)
+    if observed:
+        if observed.get('uuid') != uuid:
+            raise ValueError('A different filesystem is mounted at ' + target)
+        return
+    entries = json.loads(run('findmnt', '--fstab', '--evaluate', '--json', '-o', 'TARGET,UUID', check=False) or '{}').get('filesystems', [])
+    if not any(entry.get('uuid') == uuid and os.path.normpath(entry.get('target', '')) == os.path.normpath(target) for entry in entries):
+        raise ValueError('Automatic mounting needs an existing /etc/fstab entry for UUID ' + uuid + ' at ' + target)
+    run('mount', '--', target, timeout=45)
+    observed = mounted_at(target)
+    if not observed or observed.get('uuid') != uuid:
+        raise ValueError('The expected filesystem could not be mounted at ' + target)
+
+
+def prepare_mounts():
+    config = read_config()
+    if not config['auto_mount']:
+        raise ValueError('Enable “Mount configured drives when needed” in the backup plan first.')
+    if config.get('source_uuid'):
+        ensure_mount(config.get('source_mountpoint') or config['source'], config['source_uuid'])
+    ensure_mount(config['mountpoint'], config['uuid'])
+    return dict(message='Configured backup drives are mounted and their UUIDs are verified.')
 
 
 def status():
@@ -69,6 +120,10 @@ def status():
     mounted = observed == config['uuid']
     result = dict(collected_at=int(time.time()), config=config, service=service, timer=timer,
                   mounted=mounted, actual_mounts=actual_mount(config['uuid']))
+    result['source_ready'] = Path(config['source']).is_dir()
+    if config.get('source_uuid'):
+        source_mount = mounted_at(config.get('source_mountpoint') or config['source'])
+        result['source_ready'] = result['source_ready'] and bool(source_mount and source_mount.get('uuid') == config['source_uuid'])
     if mounted:
         usage = shutil.disk_usage(config['mountpoint'])
         result.update(free=usage.free, total=usage.total)
@@ -80,11 +135,27 @@ def status():
 
 
 def validate(data):
-    expected = {'mountpoint', 'hours', 'hourly', 'daily', 'weekly', 'monthly', 'excludes', 'revision'}
+    expected = {'mountpoint', 'hours', 'hourly', 'daily', 'weekly', 'monthly', 'excludes', 'revision',
+                'source', 'source_kind', 'compression', 'scan_mode', 'reserve_gib', 'quota_gib', 'exclude_caches', 'auto_mount', 'repository', 'destination_kind'}
     if not isinstance(data, dict) or set(data) != expected:
         raise ValueError('Unexpected configuration fields.')
     if not isinstance(data['revision'], str) or not re.fullmatch('[a-f0-9]{64}', data['revision']):
         raise ValueError('Invalid configuration revision; reopen settings.')
+    if data['source_kind'] not in ('folder', 'drive') or data['destination_kind'] not in ('folder', 'drive') or data['scan_mode'] not in ('incremental', 'full_scan'):
+        raise ValueError('Unsupported backup type.')
+    if data['compression'] not in ('none', 'lz4', 'zstd,3', 'zstd,6', 'zstd,9'):
+        raise ValueError('Unsupported compression option.')
+    for key, minimum in (('reserve_gib', 1), ('quota_gib', -1)):
+        if type(data[key]) is not int or not minimum <= data[key] <= 1048576:
+            raise ValueError('Storage limits must be whole GiB values within range.')
+    if type(data['exclude_caches']) is not bool or type(data['auto_mount']) is not bool:
+        raise ValueError('Cache and automatic mount options must be checkbox values.')
+    source = data['source']
+    if not isinstance(source, str) or not source.startswith('/') or len(source) > 4096 or any(c in source for c in '\0\n\r') or '..' in Path(source).parts:
+        raise ValueError('Choose an absolute source folder or mounted drive.')
+    repository = data['repository']
+    if not isinstance(repository, str) or (repository and (not repository.startswith('/') or len(repository) > 4096 or any(c in repository for c in '\0\n\r') or '..' in Path(repository).parts)):
+        raise ValueError('Choose an absolute backup folder.')
     for key in ('hours', 'hourly', 'daily', 'weekly', 'monthly'):
         if type(data[key]) is not int:
             raise ValueError('Retention and schedule must be integers.')
@@ -93,8 +164,8 @@ def validate(data):
     if any(not 0 <= data[key] <= 365 for key in ('hourly', 'daily', 'weekly', 'monthly')) or not any(data[key] for key in ('hourly', 'daily', 'weekly', 'monthly')):
         raise ValueError('Keep at least one archive; retention must be between 0 and 365.')
     mount = data['mountpoint']
-    if not isinstance(mount, str) or not re.fullmatch(r'/[A-Za-z0-9_./ -]{1,240}', mount) or '..' in Path(mount).parts:
-        raise ValueError('Use an absolute mount path with letters, numbers, spaces, dots, dashes or underscores.')
+    if not isinstance(mount, str) or not mount.startswith('/') or len(mount) > 4096 or any(c in mount for c in '\0\n\r') or '..' in Path(mount).parts:
+        raise ValueError('Use an absolute mount path without line breaks.')
     if not isinstance(data['excludes'], str) or len(data['excludes'].encode()) > 32768 or '\0' in data['excludes']:
         raise ValueError('Exclusions must be text smaller than 32 KiB.')
     # Validate using Borg's own parser, including supported pattern prefixes.
@@ -106,13 +177,59 @@ def validate(data):
 
 
 def replacement(text, data):
-    text, count = re.subn(r'^mountpoint=.+$', 'mountpoint=' + shlex.quote(data['mountpoint']), text, flags=re.M)
+    text = re.sub(r'^destination_kind=.+\n', '', text, flags=re.M)
+    text, count = re.subn(r'^mountpoint=.+$', lambda _: 'mountpoint=' + shlex.quote(data['mountpoint']), text, flags=re.M)
     if count != 1:
         raise ValueError('Unsupported mountpoint declaration.')
+    text = re.sub(r'^mountpoint=.+$', lambda m: m[0] + '\ndestination_kind=' + data['destination_kind'], text, flags=re.M)
+    if data.get('destination_uuid'):
+        text = re.sub(r'^uuid=.+$', lambda _: 'uuid=' + shlex.quote(data['destination_uuid']), text, flags=re.M)
+    if data.get('repository'):
+        text = re.sub(r'^repository=.+\n', '', text, flags=re.M)
+        text, count = re.subn(r'^export BORG_REPO=.+$', lambda _: 'repository=' + shlex.quote(data['repository']) + '\nexport BORG_REPO="$repository"', text, flags=re.M)
+        if count != 1:
+            raise ValueError('Unsupported repository declaration.')
+        text = text.replace(' --exclude "pp:${BORG_REPO#/}"','')
+        text = text.replace('borg create --stats --show-rc','borg create --stats --show-rc --exclude "pp:${BORG_REPO#/}"')
     retention = ' '.join(f'--keep-{key} {data[key]}' for key in ('hourly', 'daily', 'weekly', 'monthly'))
     text, count = re.subn(r'--keep-hourly \d+ --keep-daily \d+ --keep-weekly \d+ --keep-monthly \d+', retention, text)
     if count != 1:
         raise ValueError('Unsupported retention declaration.')
+    # Preserve the existing job's locking, UUID checks, repository and cleanup flow.
+    text = re.sub(r'^source(?:_kind|_uuid|_mountpoint)?=.+\n', '', text, flags=re.M)
+    text = re.sub(r'^# M45 source checks\n.*?^# End M45 source checks\n', '', text, flags=re.M | re.S)
+    checks = '# M45 source checks\n'
+    if data['source_kind'] == 'drive' or data['auto_mount']:
+        if not data.get('source_uuid'):
+            raise ValueError('The source drive needs a filesystem UUID.')
+        checks += 'source_uuid=' + shlex.quote(data['source_uuid']) + '\nsource_mountpoint=' + shlex.quote(data.get('source_mountpoint') or data['source']) + '\n'
+    if data['auto_mount']:
+        checks += '# M45 auto mount: yes\n/usr/libexec/m45-drive-backuper/backend mount\n'
+    if data.get('source_uuid'):
+        checks += '[[ $(findmnt -rn -M "$source_mountpoint" -o UUID) == "$source_uuid" ]] || { echo "Expected source drive is not mounted." >&2; exit 1; }\n'
+    checks += '[[ -d "$source" ]] || { echo "Backup source is unavailable." >&2; exit 1; }\n'
+    checks += 'exec 8<"$source"\n# End M45 source checks\n'
+    text = re.sub(r'^mountpoint=.+$', lambda m: m[0] + '\nsource=' + shlex.quote(data['source']) + '\nsource_kind=' + data['source_kind'] + '\n' + checks.rstrip(), text, flags=re.M)
+    text, count = re.subn(r"(^\s*'::home-\{now:[^']+\}' )(.+?)( \|\| backup_rc=\$\?)$", lambda m: m[1] + '"$source"' + m[3], text, flags=re.M)
+    if count != 1:
+        raise ValueError('Unsupported backup source command.')
+    compression = '--compression ' + data['compression'] + (' --files-cache disabled' if data['scan_mode'] == 'full_scan' else '')
+    text, count = re.subn(r'--compression \S+(?: --files-cache \S+)?', compression, text)
+    if count != 1:
+        raise ValueError('Unsupported compression command.')
+    text = text.replace(' --exclude-caches', '')
+    if data['exclude_caches']:
+        text = text.replace('--exclude-from /etc/local-system-backup.exclude', '--exclude-from /etc/local-system-backup.exclude --exclude-caches')
+    text, count = re.subn(r"^\(\( available > \d+ \)\).+$", f"(( available > {data['reserve_gib'] * 1073741824} )) || {{ echo 'Less than {data['reserve_gib']} GiB free after cleanup; backup stopped.' >&2; exit 1; }}", text, flags=re.M)
+    if count != 1:
+        raise ValueError('Unsupported free-space guard.')
+    if data['quota_gib'] >= 0:
+        text = re.sub(r'^# M45 storage limit GiB: \d+\n.*?^# End M45 storage limit\n', '', text, flags=re.M | re.S)
+        quota = f"borg config \"$BORG_REPO\" storage_quota {data['quota_gib'] * 1073741824}\n" if data['quota_gib'] else 'if borg config "$BORG_REPO" storage_quota >/dev/null 2>&1; then borg config --delete "$BORG_REPO" storage_quota; fi\n'
+        block = f"# M45 storage limit GiB: {data['quota_gib']}\n" + quota + '# End M45 storage limit\n'
+        text, count = re.subn(r'^(# Reclaim abandoned transaction data.*)$', lambda m: block + m[0], text, flags=re.M)
+        if count != 1:
+            raise ValueError('Unsupported repository setup block.')
     return text
 
 
@@ -131,12 +248,67 @@ def atomic(path, content, mode):
             os.unlink(name)
 
 
+def configure_destination(data, old, source):
+    """Use an empty folder or this machine's existing managed repository."""
+    path = Path(data['repository'])
+    resolved = path.resolve()
+    if str(resolved) != str(path) or resolved == source or source.is_relative_to(resolved):
+        raise ValueError('Choose a resolved backup folder that does not contain the source.')
+    parent = path
+    while not parent.exists():
+        parent = parent.parent
+    filesystem = json.loads(run('findmnt','--json','-T',str(parent),'-o','TARGET,UUID')).get('filesystems',[{}])[0]
+    uuid, mountpoint = filesystem.get('uuid'), filesystem.get('target')
+    if not uuid or not re.fullmatch('[a-fA-F0-9-]+',uuid) or not mountpoint:
+        raise ValueError('Choose a folder on a connected local drive with a filesystem UUID.')
+    if data['destination_kind'] == 'drive' and Path(mountpoint) != Path(data['mountpoint']):
+        raise ValueError('The selected backup drive is no longer available. Reconnect and mount it before saving.')
+    if (old.get('mountpoint') and path.is_relative_to(Path(old['mountpoint']))
+            and Path(old['mountpoint']).is_relative_to(Path(mountpoint)) and uuid != old.get('uuid')):
+        raise ValueError('The expected backup drive is unavailable at this folder. Reconnect it or choose another destination.')
+    if path == Path(mountpoint):
+        raise ValueError('Choose a dedicated backup folder inside the drive, or select “This drive” in the app.')
+    marker = path/'.m45-drive-backuper'
+    machine = Path('/etc/machine-id').read_text().strip()
+    env = dict(ENV,BORG_CACHE_DIR='/var/cache/local-home-backup',BORG_SECURITY_DIR='/var/lib/local-home-backup/security',BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK='yes',BORG_PASSPHRASE='')
+    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+        managed = marker.is_file() and marker.read_text().strip() == machine
+        legacy = path.name == 'borg-home-' + machine
+        if not managed and not legacy:
+            raise ValueError('This folder contains other files. Create an empty backup folder here instead.')
+        run('borg','info','--json','--lock-wait','1',str(path),env=env,timeout=90)
+    else:
+        path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+        run('borg','init','--encryption=none',str(path),env=env,timeout=90)
+        atomic(marker,machine+'\n',0o600)
+    data.update(repository=str(path),mountpoint=mountpoint,destination_uuid=uuid)
+
+
 def apply(data):
     validate(data)
     old = read_config()
     if old['revision'] != data['revision']:
         raise ValueError('Backup settings changed outside this editor. Reopen M45 Drive Backuper before saving.')
-    if data['mountpoint'] != old['mountpoint']:
+    source = Path(data['source']).resolve(strict=True)
+    if str(source) != str(Path(data['source'])):
+        raise ValueError('Use the resolved source path so exclusions match: ' + str(source))
+    destination = Path(data['mountpoint']).resolve()
+    repository = Path(data['repository']).resolve() if data['repository'] else destination
+    if not source.is_dir() or source.is_relative_to(repository):
+        raise ValueError('Choose a source folder outside the backup destination.')
+    data = dict(data, source=str(source))
+    if data['source_kind'] == 'drive':
+        data['source_uuid'] = run('findmnt', '-rn', '-M', str(source), '-o', 'UUID', check=False)
+        if not re.fullmatch(r'[A-Za-z0-9-]+', data['source_uuid']):
+            raise ValueError('The selected source drive must be mounted and have a filesystem UUID.')
+    if data['auto_mount']:
+        output = run('findmnt', '--json', '-T', str(source), '-o', 'TARGET,UUID')
+        filesystem = json.loads(output).get('filesystems', [{}])[0]
+        if not filesystem.get('uuid') or not filesystem.get('target'):
+            raise ValueError('Automatic mounting needs a source filesystem with a UUID. Connect it while saving this option.')
+        data.update(source_uuid=filesystem['uuid'], source_mountpoint=filesystem['target'])
+    changing_repository = bool(data['repository'] and data['repository'] != old.get('repository'))
+    if not changing_repository and data['mountpoint'] != old['mountpoint']:
         observed = run('findmnt', '-rn', '-M', data['mountpoint'], '-o', 'UUID', check=False)
         if observed != old['uuid']:
             raise ValueError('The new mount path must contain the existing UUID-verified backup filesystem.')
@@ -148,6 +320,11 @@ def apply(data):
         except BlockingIOError:
             raise ValueError('A backup is running; try again after it finishes.') from None
         original = SCRIPT.read_text()
+        # Reject unsupported scripts before creating even an empty repository.
+        preview = replacement(original, data)
+        subprocess.run(['/bin/bash', '-n'], input=preview, text=True, check=True, capture_output=True, env=ENV)
+        if changing_repository:
+            configure_destination(data,old,source)
         updated = replacement(original, data)
         subprocess.run(['/bin/bash', '-n'], input=updated, text=True, check=True, capture_output=True, env=ENV)
         targets = {SCRIPT: (updated, 0o755), EXCLUDES: (data['excludes'], 0o644), INTERVAL: (
@@ -181,7 +358,7 @@ def archives():
     config = read_config()
     if run('findmnt', '-rn', '-M', config['mountpoint'], '-o', 'UUID', check=False) != config['uuid']:
         raise ValueError('The configured backup filesystem is not mounted.')
-    repo = Path(config['mountpoint']) / ('borg-home-' + Path('/etc/machine-id').read_text().strip())
+    repo = Path(config['repository'])
     env = dict(ENV, BORG_CACHE_DIR='/var/cache/local-home-backup', BORG_SECURITY_DIR='/var/lib/local-home-backup/security',
                BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK='yes')
     return json.loads(run('borg', 'list', '--json', '--lock-wait', '1', '--glob-archives', 'home-*', str(repo), timeout=90, env=env))
@@ -191,7 +368,7 @@ def main():
     args = sys.argv[1:]
     if args == ['status']:
         return status()
-    if not args or args[0] not in ('apply', 'start', 'enable', 'disable', 'archives'):
+    if not args or args[0] not in ('apply', 'start', 'enable', 'disable', 'archives', 'mount'):
         raise ValueError('Unsupported action.')
     if os.geteuid() != 0:
         raise PermissionError('This action requires administrator authentication.')
@@ -201,6 +378,8 @@ def main():
         raise ValueError('Unexpected arguments.')
     if args[0] == 'archives':
         return archives()
+    if args[0] == 'mount':
+        return prepare_mounts()
     command = {'start': ('start', '--no-block', SERVICE), 'enable': ('enable', '--now', TIMER),
                'disable': ('disable', '--now', TIMER)}[args[0]]
     run('systemctl', *command)
