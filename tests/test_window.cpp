@@ -17,10 +17,58 @@
 #include <QListWidget>
 #include <QClipboard>
 #include <QStackedWidget>
+#include <QStyleOptionButton>
+#include <QStyle>
 
 class WindowTests : public QObject {
     Q_OBJECT
 private slots:
+    void desktopPaletteChangesRefreshExistingWidgets() {
+        struct PaletteReset {
+            QPalette palette = qApp->palette();
+            ~PaletteReset() { qApp->setPalette(palette); }
+        } reset;
+        const auto light = qApp->style()->standardPalette();
+        auto dark = light;
+        dark.setColor(QPalette::Window, QColor("#252930"));
+        dark.setColor(QPalette::WindowText, QColor("#e3e7ed"));
+        dark.setColor(QPalette::Base, QColor("#1b1e24"));
+        dark.setColor(QPalette::Text, QColor("#e3e7ed"));
+        dark.setColor(QPalette::AlternateBase, QColor("#292e36"));
+        dark.setColor(QPalette::Button, QColor("#303640"));
+        dark.setColor(QPalette::ButtonText, QColor("#e3e7ed"));
+        dark.setColor(QPalette::Highlight, QColor("#347fba"));
+        dark.setColor(QPalette::HighlightedText, Qt::white);
+        dark.setColor(QPalette::Disabled, QPalette::ButtonText, QColor("#949dab"));
+        qApp->setPalette(light);
+        Window window(true); window.Show(); window.selectPage(1);
+        auto *checkbox = window.findChild<QCheckBox *>("packageRecovery");
+        for (const auto &palette : {dark, light, dark}) {
+            qApp->setPalette(palette);
+            QCoreApplication::processEvents();
+            const auto image = window.grab().toImage();
+            QCOMPARE(image.pixelColor(window.width()-5, window.height()/2), palette.color(QPalette::Base));
+            QCOMPARE(checkbox->palette().color(QPalette::WindowText), palette.color(QPalette::Text));
+            QCOMPARE(window.m_source->palette().color(QPalette::Text), palette.color(QPalette::Text));
+            QCOMPARE(window.m_save->palette().color(QPalette::Disabled, QPalette::ButtonText),
+                     palette.color(QPalette::Disabled, QPalette::ButtonText));
+            checkbox->setFocus();
+            checkbox->setChecked(false);
+            const auto unchecked = checkbox->grab().toImage();
+            QTest::keyClick(checkbox, Qt::Key_Space);
+            QVERIFY(checkbox->isChecked());
+            const auto checked = checkbox->grab().toImage();
+            QVERIFY(checked != unchecked);
+            QStyleOptionButton option; option.initFrom(checkbox);
+            const auto indicator = checkbox->style()->subElementRect(QStyle::SE_CheckBoxIndicator, &option, checkbox);
+            // An unchecked box must have a visible outline, not disappear into the page.
+            bool outline = false;
+            for (int y=indicator.top(); y<=indicator.bottom(); ++y)
+                for (int x=indicator.left(); x<=indicator.right(); ++x)
+                    outline |= unchecked.pixelColor(x,y) == palette.color(QPalette::Text);
+            QVERIFY(outline);
+        }
+    }
     void activityEventsFilterCopyAndPreserveLiteralMultilineOutput() {
         Window window(true); window.Show(); window.selectPage(4);
         const QString message = "<file>&.txt: Permission denied\nOriginal size:      12.4 GB\nDeduplicated size:   42.0 MB";

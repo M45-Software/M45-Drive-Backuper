@@ -1,4 +1,4 @@
-// Capture the actual Qt UI with deterministic demo data, fonts and a dark palette.
+// Capture demo pages: capture-screenshots [output] [dark|light|switch-dark|switch-light].
 #include "window.h"
 #include <QApplication>
 #include <QDir>
@@ -28,6 +28,7 @@ QPalette screenshotPalette() {
     p.setColor(QPalette::HighlightedText, Qt::white);
     p.setColor(QPalette::Disabled, QPalette::Text, QColor("#949dab"));
     p.setColor(QPalette::Disabled, QPalette::WindowText, p.color(QPalette::Disabled, QPalette::Text));
+    p.setColor(QPalette::Disabled, QPalette::ButtonText, p.color(QPalette::Disabled, QPalette::Text));
     return p;
 }
 }
@@ -42,14 +43,23 @@ int main(int argc, char **argv) {
     app.setQuitOnLastWindowClosed(false);
     const auto args = app.arguments();
     const QDir output(args.size() > 1 ? args[1] : "docs/screenshots");
+    const QString theme = args.size() > 2 ? args[2] : "dark";
+    if (!QStringList{"dark", "light", "switch-dark", "switch-light"}.contains(theme)) return 2;
+    const auto light = app.style()->standardPalette();
+    const auto dark = screenshotPalette();
     if (!QDir().mkpath(output.absolutePath())) return 1;
     bool saved = true;
     const QStringList names{"overview", "settings", "exclusions", "backups", "activity", "preferences"};
     {
-        app.setPalette(screenshotPalette());
+        app.setPalette(theme == "light" || theme == "switch-dark" ? light : dark);
         Window window(true);
         window.resize(1200, 960);
         window.show();
+        if (theme.startsWith("switch-")) {
+            app.processEvents();
+            app.setPalette(theme == "switch-dark" ? dark : light);
+            app.processEvents();
+        }
         for (int page = 0; page < names.size(); ++page) {
             window.selectPage(page);
             // Let wrapping, scroll areas and content-sized rows finish layout.

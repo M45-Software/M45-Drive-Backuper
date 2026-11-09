@@ -31,6 +31,7 @@ signals:
     void attentionRequested(const QString &title, const QString &message, bool critical);
 protected:
     void closeEvent(QCloseEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 private:
     friend class WindowTests;
     bool m_demo, m_polling = false, m_busy = false, m_loaded = false, m_loading = true;

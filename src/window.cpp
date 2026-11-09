@@ -5,6 +5,8 @@
 #include <QAction>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QEvent>
+#include <QStyleOptionButton>
 #include <QComboBox>
 #include <QCursor>
 #include <QClipboard>
@@ -47,6 +49,77 @@
 #include <QVBoxLayout>
 
 namespace {
+// Keep native labels, focus, keyboard behavior and accessibility, but draw a
+// visible indicator even when the platform style's dark checkbox has no outline.
+class PaletteCheckBox : public QCheckBox {
+public:
+    using QCheckBox::QCheckBox;
+protected:
+    void paintEvent(QPaintEvent *event) override {
+        QCheckBox::paintEvent(event);
+        QStyleOptionButton option;
+        initStyleOption(&option);
+        const auto indicator = style()->subElementRect(QStyle::SE_CheckBoxIndicator, &option, this);
+        QPainter painter(this);
+        painter.fillRect(indicator, option.palette.brush(QPalette::Base));
+        painter.setRenderHint(QPainter::Antialiasing);
+        const QRectF box = QRectF(indicator).adjusted(0.5, 0.5, -0.5, -0.5);
+        const bool checked = checkState() != Qt::Unchecked;
+        painter.setPen(QPen(option.palette.color(QPalette::Text), 1));
+        painter.setBrush(option.palette.brush(checked ? QPalette::Highlight : QPalette::Base));
+        painter.drawRoundedRect(box, 2, 2);
+        if (checked) {
+            painter.setPen(QPen(option.palette.color(QPalette::HighlightedText), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            const auto point = [&box](qreal x, qreal y) { return QPointF(box.left() + x * box.width(), box.top() + y * box.height()); };
+            if (checkState() == Qt::PartiallyChecked) painter.drawLine(point(.25,.5), point(.75,.5));
+            else {
+                painter.drawLine(point(.22,.5), point(.43,.72));
+                painter.drawLine(point(.43,.72), point(.8,.27));
+            }
+        }
+    }
+};
+
+QString workspaceStyleSheet() {
+    // QSS palette() resolves active brushes, even in :disabled rules. Read the
+    // disabled colors explicitly rather than using a border color as text.
+    return QString(R"(
+        QWidget#workspace { background: palette(base); color: palette(text); }
+        QWidget#workspace QLabel, QWidget#workspace QCheckBox, QWidget#workspace QGroupBox { color: palette(text); }
+        QWidget#workspace QLabel:disabled, QWidget#workspace QCheckBox:disabled { color: %2; }
+        QFrame#sidebar { background: palette(window); border-right: 1px solid palette(mid); }
+        QFrame#sidebar QLabel { color: palette(window-text); }
+        QLabel[role="eyebrow"] { color: palette(text); font-size: 10pt; font-weight: 600; }
+        QListWidget#navigation { color: palette(window-text); background: transparent; border: none; outline: none; }
+        QListWidget#navigation::item { padding: 12px 14px; margin: 3px 0; border-radius: 6px; }
+        QListWidget#navigation::item:selected { background: palette(highlight); color: palette(highlighted-text); font-weight: 600; }
+        QListWidget#navigation::item:hover:!selected { background: palette(alternate-base); color: palette(text); }
+        QTabWidget::pane { border: none; }
+        QScrollArea { border: none; background: transparent; }
+        QScrollArea > QWidget > QWidget { background: palette(base); }
+        QGroupBox { background: palette(base); border: 1px solid palette(mid); border-radius: 8px; margin-top: 10px; padding: 14px 12px 10px; font-weight: 600; }
+        QGroupBox::title { subcontrol-origin: margin; left: 16px; padding: 0 6px; }
+        QFrame#statusCard { background: palette(alternate-base); border-radius: 8px; border-left: 4px solid palette(highlight); }
+        QFrame#statusCard[state="warning"] { border-left-color: #b87917; }
+        QFrame#statusCard[state="error"] { border-left-color: #c94d48; }
+        QFrame#statusCard[state="ok"] { border-left-color: #338562; }
+        QPushButton { padding: 8px 14px; border-radius: 5px; border: 1px solid palette(mid); background: palette(button); color: palette(button-text); }
+        QPushButton:hover { border-color: palette(highlight); }
+        QPushButton:pressed { background: palette(alternate-base); color: palette(text); }
+        QPushButton:disabled { color: %1; }
+        QPushButton[primary="true"] { background: palette(highlight); color: palette(highlighted-text); border: 1px solid palette(highlight); font-weight: 600; }
+        QPushButton[primary="true"]:disabled { background: palette(button); color: %1; border-color: palette(mid); }
+        QLineEdit, QComboBox, QSpinBox { min-height: 26px; padding: 3px 6px; }
+        QToolButton { padding: 8px; }
+        QHeaderView::section { padding: 10px 8px; border: none; background: palette(window); color: palette(window-text); }
+        QTableView, QTreeView, QPlainTextEdit { border: 1px solid palette(mid); border-radius: 5px; }
+        QTableView::item, QTreeView::item { padding: 7px; }
+        QWidget#editBar { background: palette(window); border-radius: 6px; }
+        QWidget#editBar QLabel { color: palette(window-text); }
+    )").arg(qApp->palette().color(QPalette::Disabled, QPalette::ButtonText).name(),
+             qApp->palette().color(QPalette::Disabled, QPalette::Text).name());
+}
+
 QIcon statusIcon(const QString &state) {
     QPixmap pix(64, 64); pix.fill(Qt::transparent);
     QPainter p(&pix); p.setRenderHint(QPainter::Antialiasing);
@@ -87,37 +160,8 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
         if (!m_demo) m_tray.showMessage("M45 Drive Backuper — " + title,message,critical ? QSystemTrayIcon::Critical : QSystemTrayIcon::Warning,10000);
     });
     setWindowTitle("M45 Drive Backuper"); resize(1120, 840); setMinimumSize(940, 700); setWindowIcon(statusIcon("ok"));
-    // Use palette roles so the workspace follows both light and dark desktop themes.
-    setStyleSheet(R"(
-        QWidget#workspace { background: palette(base); }
-        QFrame#sidebar { background: palette(window); border-right: 1px solid palette(mid); }
-        QLabel[role="eyebrow"] { color: palette(text); font-size: 10pt; font-weight: 600; }
-        QListWidget#navigation { background: transparent; border: none; outline: none; }
-        QListWidget#navigation::item { padding: 12px 14px; margin: 3px 0; border-radius: 6px; }
-        QListWidget#navigation::item:selected { background: palette(highlight); color: palette(highlighted-text); font-weight: 600; }
-        QListWidget#navigation::item:hover:!selected { background: palette(alternate-base); }
-        QTabWidget::pane { border: none; }
-        QScrollArea { border: none; background: transparent; }
-        QScrollArea > QWidget > QWidget { background: palette(base); }
-        QGroupBox { background: palette(base); border: 1px solid palette(mid); border-radius: 8px; margin-top: 10px; padding: 14px 12px 10px; font-weight: 600; }
-        QGroupBox::title { subcontrol-origin: margin; left: 16px; padding: 0 6px; }
-        QFrame#statusCard { background: palette(alternate-base); border-radius: 8px; border-left: 4px solid palette(highlight); }
-        QFrame#statusCard[state="warning"] { border-left-color: #b87917; }
-        QFrame#statusCard[state="error"] { border-left-color: #c94d48; }
-        QFrame#statusCard[state="ok"] { border-left-color: #338562; }
-        QPushButton { padding: 8px 14px; border-radius: 5px; border: 1px solid palette(mid); background: palette(button); color: palette(button-text); }
-        QPushButton:hover { border-color: palette(highlight); }
-        QPushButton:pressed { background: palette(alternate-base); }
-        QPushButton:disabled { color: palette(mid); }
-        QPushButton[primary="true"] { background: palette(highlight); color: palette(highlighted-text); border: 1px solid palette(highlight); font-weight: 600; }
-        QPushButton[primary="true"]:disabled { background: palette(window); color: palette(mid); border-color: palette(mid); }
-        QLineEdit, QComboBox, QSpinBox { min-height: 26px; padding: 3px 6px; }
-        QToolButton { padding: 8px; }
-        QHeaderView::section { padding: 10px 8px; border: none; background: palette(window); }
-        QTableView, QTreeView, QPlainTextEdit { border: 1px solid palette(mid); border-radius: 5px; }
-        QTableView::item, QTreeView::item { padding: 7px; }
-        QWidget#editBar { background: palette(window); border-radius: 6px; }
-    )");
+    setStyleSheet(workspaceStyleSheet());
+    qApp->installEventFilter(this);
     auto *body = new QWidget; body->setObjectName("workspace");
     auto *shell = new QHBoxLayout(body); shell->setContentsMargins(0,0,0,0); shell->setSpacing(0);
     auto *sidebar = new QFrame; sidebar->setObjectName("sidebar"); sidebar->setFixedWidth(204);
@@ -210,9 +254,9 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     logTools->addWidget(m_logSearch,1); logTools->addWidget(m_logLevel); layout->addLayout(logTools);
     auto *viewTools = new QHBoxLayout;
     m_logCount = label(); m_logCount->setObjectName("activityCount"); viewTools->addWidget(m_logCount,1);
-    auto *rawLog = new QCheckBox("Plain text"); rawLog->setObjectName("rawActivity");
+    auto *rawLog = new PaletteCheckBox("Plain text"); rawLog->setObjectName("rawActivity");
     auto *copyLog = new QPushButton("Copy visible log"); copyLog->setObjectName("copyActivity");
-    m_followLog = new QCheckBox("Follow latest"); m_followLog->setChecked(true);
+    m_followLog = new PaletteCheckBox("Follow latest"); m_followLog->setChecked(true);
     viewTools->addWidget(rawLog); viewTools->addWidget(m_followLog); viewTools->addWidget(copyLog); layout->addLayout(viewTools);
     m_logAccess = label(); m_logAccess->setObjectName("activityAccess"); layout->addWidget(m_logAccess);
     m_logViews = new QStackedWidget; layout->addWidget(m_logViews,1);
@@ -267,10 +311,10 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     });
     connect(m_source,&QLineEdit::textChanged,this,[this](const QString &source) {if (!m_loading && m_sourceKind->currentData() == "folder") m_folderSource = source;});
     settingsForm->setRowVisible(m_sourceDrive,false);
-    m_includeSystem = new QCheckBox("Also include system settings and local software"); m_includeSystem->setObjectName("includeSystem");
+    m_includeSystem = new PaletteCheckBox("Also include system settings and local software"); m_includeSystem->setObjectName("includeSystem");
     m_includeSystem->setToolTip("Includes /etc, /usr/local, /root, scheduled jobs, package records, network and account settings. Other drives and service databases are not included.");
     settingsForm->addRow("",m_includeSystem);
-    m_packageRecovery = new QCheckBox("Include package recovery file in every backup"); m_packageRecovery->setObjectName("packageRecovery");
+    m_packageRecovery = new PaletteCheckBox("Include package recovery file in every backup"); m_packageRecovery->setObjectName("packageRecovery");
     m_packageRecovery->setToolTip("Automatically refresh package names, versions and reinstall information, then store the file in the same backup snapshot. Applies to scheduled and manual backups. Save changes to enable or disable it.");
     settingsForm->addRow("",m_packageRecovery);
     auto *destinationGroup = new QGroupBox("2   Where to keep it");
@@ -344,7 +388,7 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     quotaRow->setToolTip("Limits Borg repository data; metadata and temporary space can add overhead. Applied on the next backup.");
     connect(m_quotaMode,&QComboBox::currentIndexChanged,this,[this] {m_quota->setVisible(m_quotaMode->currentData().toInt() == 1);});
     advancedForm->addRow("Backup storage limit",quotaRow);
-    m_autoMount = new QCheckBox("Mount configured drives when needed"); m_autoMount->setObjectName("autoMount");
+    m_autoMount = new PaletteCheckBox("Mount configured drives when needed"); m_autoMount->setObjectName("autoMount");
     m_autoMount->setToolTip("Before a backup, try existing /etc/fstab entries for the source and destination. UUIDs are checked before and after mounting. Drives must be connected and unlocked; new mount definitions are not created.");
     advancedForm->addRow("",m_autoMount);
 
@@ -372,7 +416,7 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     auto *skipBody = new QWidget; auto *skipLayout = new QVBoxLayout(skipBody); skipLayout->setContentsMargins(0,0,8,0); skipLayout->setSpacing(12);
     skipScroll->setWidget(skipBody); layout->addWidget(skipScroll); layout = skipLayout;
     m_excludes = new ExclusionEditor(m_demo); layout->addWidget(m_excludes,1);
-    m_skipCaches = new QCheckBox("Also skip marked cache folders (extra rule)"); m_skipCaches->setToolTip("This adds Borg’s CACHEDIR.TAG cache rule to the exclusion list above. It is separate from the displayed rule count."); layout->addWidget(m_skipCaches);
+    m_skipCaches = new PaletteCheckBox("Also skip marked cache folders (extra rule)"); m_skipCaches->setToolTip("This adds Borg’s CACHEDIR.TAG cache rule to the exclusion list above. It is separate from the displayed rule count."); layout->addWidget(m_skipCaches);
     auto *analyzer = new QWidget; auto *analyzerLayout = new QHBoxLayout(analyzer); analyzerLayout->setContentsMargins(0,0,0,0);
     auto *analyzerText = label("Find large folders with K4DirStat, then choose what to skip.");
     auto *openAnalyzer = new QPushButton("Open K4DirStat…"); openAnalyzer->setObjectName("openAnalyzer");
@@ -388,7 +432,7 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     auto *preferencesBody = new QWidget; auto *preferencesLayout = new QVBoxLayout(preferencesBody); preferencesLayout->setContentsMargins(0,0,8,0); preferencesLayout->setSpacing(14);
     preferencesScroll->setWidget(preferencesBody); layout->addWidget(preferencesScroll); layout = preferencesLayout;
     layout->addWidget(label("Desktop monitoring"));
-    m_startup = new QCheckBox("Start tray monitor at login"); m_notifications = new QCheckBox("Notify when backup status needs attention");
+    m_startup = new PaletteCheckBox("Start tray monitor at login"); m_notifications = new PaletteCheckBox("Notify when backup status needs attention");
     bool startup = true; QFile startupFile(startupPath()); if (startupFile.open(QIODevice::ReadOnly)) startup = !startupFile.readAll().contains("Hidden=true");
     m_startup->setChecked(startup); m_notifications->setChecked(m_settings.value("notifications",true).toBool());
     layout->addWidget(m_startup); layout->addWidget(m_notifications);
@@ -397,7 +441,7 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     auto *recoveryBox = new QGroupBox("Software recovery"); auto *recoveryLayout = new QVBoxLayout(recoveryBox);
     m_recoveryStatus = label("Reading saved recovery settings…"); m_recoveryStatus->setObjectName("recoveryStatus");
     auto recoveryFont = m_recoveryStatus->font(); recoveryFont.setBold(true); m_recoveryStatus->setFont(recoveryFont); recoveryLayout->addWidget(m_recoveryStatus);
-    m_recoveryToggle = new QCheckBox("Include package recovery file in every backup"); m_recoveryToggle->setObjectName("recoveryToggle"); recoveryLayout->addWidget(m_recoveryToggle);
+    m_recoveryToggle = new PaletteCheckBox("Include package recovery file in every backup"); m_recoveryToggle->setObjectName("recoveryToggle"); recoveryLayout->addWidget(m_recoveryToggle);
     recoveryLayout->addWidget(label("When enabled, every scheduled or manual backup refreshes the package list and saves it in that snapshot. Uncheck this option and Save changes to turn off automatic recovery creation. Existing backups and exported copies are kept."));
     connect(m_packageRecovery,&QCheckBox::toggled,this,[this](bool checked) {QSignalBlocker blocker(m_recoveryToggle); m_recoveryToggle->setChecked(checked);});
     connect(m_recoveryToggle,&QCheckBox::toggled,m_packageRecovery,&QCheckBox::setChecked);
@@ -471,6 +515,17 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     } else {
         auto *timer = new QTimer(this); connect(timer,&QTimer::timeout,this,&Window::poll); timer->start(15000); poll();
     }
+}
+
+bool Window::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == qApp && event->type() == QEvent::ApplicationPaletteChange) {
+        // QSS keeps resolved palette brushes. Re-polish from the new desktop
+        // palette so children do not retain light colors after a theme change.
+        setStyleSheet({});
+        setPalette(qApp->palette());
+        setStyleSheet(workspaceStyleSheet());
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void Window::poll() {
