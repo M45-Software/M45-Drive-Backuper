@@ -4,7 +4,7 @@ A native Qt 6 KDE Plasma tray app for configuring and monitoring this machine's 
 
 ## Screenshots
 
-These are captures of the actual Qt app using synthetic demo data. The destination warning demonstrates a moved backup drive, rather than the state of a real machine. Click any image to view it at full resolution.
+These are dark-mode captures of the actual Qt app using synthetic demo data. The app follows your desktop palette. The destination warning demonstrates a moved backup drive, rather than the state of a real machine. Click any image to view it at full resolution.
 
 ### Everything important, at a glance
 
@@ -27,17 +27,6 @@ Local timestamps, severity icons, source labels, and wrapped messages make each 
 | :--- | :--- |
 | [![Saved backups catalog showing snapshot dates, names, and checkpoint status](docs/screenshots/backups.png)](docs/screenshots/backups.png) | [![Preferences with tray monitoring options and software recovery controls](docs/screenshots/preferences.png)](docs/screenshots/preferences.png) |
 | Inspect stored snapshots and distinguish checkpoints that may be incomplete. Listing snapshots does not verify their integrity. | Set login and notification preferences, manage package recovery, or export an extra recovery copy. |
-
-<details>
-<summary><strong>See the dark theme</strong></summary>
-
-The app follows the desktop palette. These captures show the same sample data with a dark palette.
-
-[![Overview in a dark desktop palette](docs/screenshots/overview-dark.png)](docs/screenshots/overview-dark.png)
-
-[![Activity event view in a dark desktop palette](docs/screenshots/activity-dark.png)](docs/screenshots/activity-dark.png)
-
-</details>
 
 ## Features
 
@@ -119,7 +108,7 @@ Demo mode uses synthetic data. You can edit a plan, choose exclusions and review
 
 ### Refreshing the README screenshots
 
-The opt-in capture target renders all six pages plus dark Overview and Activity variants with a consistent Fusion style, Noto Sans font, local timezone, and 1200 × 960 logical window size. Use Noto Sans and your platform's normal monospace font for consistent typography. A scale factor of 2 produces sharp 2400 × 1920 PNGs for full-size viewing. The capture tool always uses demo mode and is not included in the installed app.
+The opt-in capture target renders all six pages with a consistent dark palette, Fusion style, Noto Sans font, local timezone, and 1200 × 960 logical window size. Use Noto Sans and your platform's normal monospace font for consistent typography. A scale factor of 2 produces sharp 2400 × 1920 PNGs for full-size viewing. The capture tool always uses demo mode and is not included in the installed app.
 
 ```sh
 cmake --build build --target capture-screenshots --parallel
