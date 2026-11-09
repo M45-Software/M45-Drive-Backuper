@@ -85,6 +85,31 @@ Diagnostics are read only from the service's current invocation, so an earlier w
 
 Excluding something affects future backups and does not delete the original. Removing a rule with **Include selected again** does not override other matching rules. Old snapshots retain their contents until retention removes them. A changed source can leave exclusions outside the selected source; those paths are labelled and retained. Custom rules and comments are preserved when using the pickers. Source paths through symlinks must be replaced by their resolved path so exclusion matching stays consistent.
 
+## Install from the signed APT repository
+
+Packages are built and tested on **Ubuntu 24.04, amd64**. Other distributions are not yet tested. The shared M45 Software repository also distributes Drive Watcher; if its setup package is already installed, skip the bootstrap steps and install Backuper directly.
+
+```sh
+sudo apt install curl ca-certificates
+curl -fLO https://m45software.com/apt/m45-software-archive-keyring_1.0_all.deb
+printf '%s  %s\n' '64c664ec99234f244ec051e945ff604d8390966ef0d47df28c3ee39edc3d0fd1' 'm45-software-archive-keyring_1.0_all.deb' | sha256sum -c -
+sudo apt install ./m45-software-archive-keyring_1.0_all.deb
+sudo apt update
+sudo apt install m45-drive-backuper
+m45-drive-backuper --show
+```
+
+The setup package installs `/usr/share/keyrings/m45-software-archive-keyring.asc` and `/etc/apt/sources.list.d/m45-software.sources`. The source uses `Signed-By` to scope trust to this archive. Signing-key fingerprint: **`F8BD 2FC4 4347 3EB7 1D87 003B F8A7 E75C 58D7 C0A3`**.
+
+For later updates:
+
+```sh
+sudo apt update
+sudo apt install --only-upgrade m45-drive-backuper
+```
+
+Quit the running tray app and reopen it after upgrading. Installation does not change your backup plan or start a backup. To remove the repository and its public key while keeping installed apps, run `sudo apt purge m45-software-archive-keyring`.
+
 ## Build, test and install
 
 Requires CMake, C++17, Qt 6 Widgets/DBus development packages, Python 3, Borg 1.2, systemd and PolicyKit. Python tests use the distribution Python because it supplies Borg's pattern parser.
@@ -94,7 +119,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 (cd build && cpack -G DEB)
-sudo apt install ./build/m45-drive-backuper_0.3.4_amd64.deb
+sudo apt install ./build/m45-drive-backuper_0.3.5_amd64.deb
 m45-drive-backuper --show
 ```
 
@@ -105,6 +130,8 @@ QT_QPA_PLATFORM=offscreen ./build/m45-drive-backuper --demo --page journal --scr
 ```
 
 Demo mode uses synthetic data. You can edit a plan, choose exclusions and review the result; it never invokes the helper, opens K4DirStat, saves preferences, registers the real D-Bus name, or sends notifications. Screenshot timestamps illustrate the sample failure rather than the current state of a machine.
+
+GitHub Actions builds and tests each push and pull request and uploads the `.deb` as an artifact. A release commit on `main` whose message starts with `Release v` publishes a preview release with matching `docs/releases/vVERSION.md` notes and `SHA256SUMS`, then deploys that exact tested package to the signed APT repository. Manually published releases with matching assets also deploy; drafts do not. See [APT repository operations](docs/apt-repository.md) for the restricted receiver, dedicated deployment credential, immutable package versions, and backup coverage.
 
 ### Refreshing the README screenshots
 
