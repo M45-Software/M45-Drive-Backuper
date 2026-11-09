@@ -48,7 +48,7 @@ QIcon statusIcon(const QString &state) {
     p.setPen(Qt::NoPen); p.setBrush(QColor("#4679ad")); p.drawRoundedRect(7, 8, 46, 49, 7, 7);
     p.setPen(QPen(Qt::white, 4)); p.drawLine(17, 21, 43, 21); p.drawLine(17, 30, 35, 30);
     p.setPen(QPen(qApp->palette().color(QPalette::Window), 3));
-    p.setBrush(state == "running" ? QColor("#5ea9ec") : state == "ok" ? QColor("#54b992") : QColor("#efb14f"));
+    p.setBrush(state == "running" ? QColor("#5ea9ec") : state == "ok" ? QColor("#54b992") : state == "error" ? QColor("#ef716c") : QColor("#efb14f"));
     p.drawEllipse(35, 35, 25, 25);
     p.setPen(QPen(QColor("#172731"), 3));
     if (state == "ok") {p.drawLine(41, 47, 46, 52); p.drawLine(46, 52, 54, 42);}
@@ -77,6 +77,10 @@ QWidget *page(QTabWidget *tabs, const QString &name, QVBoxLayout *&layout) {
 }
 
 Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 Drive Backuper"), m_tray(this) {
+    m_lastNotification = m_settings.value("lastNotification").toString();
+    connect(this,&Window::attentionRequested,this,[this](const QString &title,const QString &message,bool critical) {
+        if (!m_demo) m_tray.showMessage("M45 Drive Backuper — " + title,message,critical ? QSystemTrayIcon::Critical : QSystemTrayIcon::Warning,10000);
+    });
     setWindowTitle("M45 Drive Backuper"); resize(1000, 790); setWindowIcon(statusIcon("ok"));
     auto *body = new QWidget; auto *outer = new QVBoxLayout(body); outer->setContentsMargins(22,20,22,16); outer->setSpacing(14);
     auto *heading = label("M45 Drive Backuper"); auto font = heading->font(); font.setPointSize(22); font.setBold(true); heading->setFont(font); outer->addWidget(heading);
@@ -89,6 +93,10 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     overviewScroll->setWidget(overviewBody); layout->addWidget(overviewScroll); layout = overviewLayout;
     m_status = label("Reading backup status…"); font = m_status->font(); font.setPointSize(17); font.setBold(true); m_status->setFont(font); layout->addWidget(m_status);
     m_summary = label(); layout->addWidget(m_summary);
+    m_updateReporting = new QPushButton("Enable Borg warning and error reporting…");
+    m_updateReporting->setToolTip("Update the saved backup job to retain Borg results. Your sources, exclusions, schedule and retention stay the same. Administrator authentication is required.");
+    layout->addWidget(m_updateReporting,0,Qt::AlignLeft);
+    connect(m_updateReporting,&QPushButton::clicked,this,[this] {action("upgrade-reporting");});
     auto *group = new QGroupBox("Backup plan"); auto *form = new QFormLayout(group); form->setVerticalSpacing(16);
     m_destination = label(); m_schedule = label(); m_attempt = label(); m_space = label();
     form->addRow("Destination", m_destination); form->addRow("Next scheduled run", m_schedule); form->addRow("Last attempt", m_attempt); form->addRow("Disk capacity", m_space);
@@ -131,6 +139,9 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     connect(m_archiveRefresh, &QPushButton::clicked, this, [this] {action("archives");});
     page(m_tabs, "Activity", layout);
     layout->addWidget(label("Recent backup output. Statistics appear when Borg reports them; a live percentage is not available."));
+    m_borgHeading = label("Borg warnings and errors for this attempt"); layout->addWidget(m_borgHeading);
+    m_borgMessages = new QPlainTextEdit; m_borgMessages->setReadOnly(true); m_borgMessages->setObjectName("borgMessages");
+    m_borgMessages->setMaximumHeight(180); layout->addWidget(m_borgMessages);
     auto *logTools = new QHBoxLayout; m_logSearch = new QLineEdit; m_logSearch->setPlaceholderText("Filter activity…"); m_logSearch->setClearButtonEnabled(true);
     auto *copyLog = new QPushButton("Copy visible log"); m_followLog = new QCheckBox("Follow latest"); m_followLog->setChecked(true);
     logTools->addWidget(m_logSearch,1); logTools->addWidget(m_followLog); logTools->addWidget(copyLog); layout->addLayout(logTools);
@@ -466,10 +477,14 @@ void Window::refreshDrives() {
 
 void Window::render() {
     const auto s = m_snapshot.value("service").toObject(), t = m_snapshot.value("timer").toObject(), c = m_snapshot.value("config").toObject();
+    const auto borg = m_snapshot.value("borg_report").toObject();
+    const auto outcome = borg.value("outcome").toString();
     const auto active = s.value("ActiveState").toString();
     const bool running = active == "activating" || active == "active", mounted = m_snapshot.value("mounted").toBool();
     const bool enabled = t.value("ActiveState") == "active";
-    const bool failed = active == "failed" || (!s.value("Result").toString().isEmpty() && s.value("Result") != "success");
+    const bool reportedWarning = outcome == "warning" && (s.value("Result") == "success" ||
+        (s.value("Result") == "exit-code" && s.value("ExecMainCode").toString() == "1" && s.value("ExecMainStatus").toString() == "1"));
+    const bool failed = outcome == "error" || (!reportedWarning && (active == "failed" || (!s.value("Result").toString().isEmpty() && s.value("Result") != "success")));
     QString title, explanation, state = "warning";
     if (running) {title = "Backup is running"; explanation = "Follow the Activity tab for Borg output. Closing the monitor does not stop this backup."; state = "running";}
     else if (!mounted) {
@@ -478,23 +493,33 @@ void Window::render() {
         explanation = mounts.isEmpty() ? "The expected backup filesystem is not mounted. Connect the drive before the next run." : "The backup drive is mounted at " + mounts[0].toString() + ", but the job checks a different path. Choose the detected location in Backup plan to correct it.";
         if (c.value("auto_mount").toBool()) explanation += " Automatic mounting will be attempted when the saved backup job starts.";
     } else if (!m_snapshot.value("source_ready").toBool(true)) {title = "Backup source is unavailable"; explanation = "Connect the source drive and check the selected folder. Automatic mounting can use existing filesystem entries when enabled.";}
-    else if (failed) {title = "Last backup attempt failed"; explanation = "The backup destination is available. Review the Activity tab for the failure reason before retrying.";}
+    else if (failed) {title = "Last backup attempt failed"; explanation = "Review the Borg errors and job output in Activity before retrying."; state = "error";}
+    else if (reportedWarning) {title = "Backup completed with warnings"; explanation = "Borg reported problems; some files may have been skipped or changed during the backup. Review the warnings in Activity.";}
+    else if (outcome == "skipped") {title = "Backup attempt was skipped"; explanation = "This attempt did not create a backup. Another job may have held the backup lock. Check Activity and the saved backups.";}
     else if (m_snapshot.contains("free") && m_snapshot.value("free").toDouble() <= c.value("reserve_gib").toInt(10)*1073741824.0) {title = "Backup drive is low on space"; explanation = "Available space is below the configured free-space threshold. Cleanup must reclaim enough space before a new archive can be written.";}
     else if (!enabled) {title = "Automatic backups are disabled"; explanation = "Enable the schedule to resume automatic backups.";}
     else if (s.value("ExecMainExitTimestamp").toString().isEmpty()) {title = "Waiting for the first backup result"; explanation = "The schedule is active. Read the archive catalog to inspect stored backups.";}
-    else {title = "Last backup attempt completed"; explanation = "The service completed successfully; Borg warnings may still appear in the journal. Read the archive catalog to confirm stored backups."; state = "ok";}
+    else {title = "Last backup attempt completed"; explanation = outcome == "success" ? "Borg completed without warnings. Read the archive catalog to inspect stored backups." : "The service completed successfully. Detailed Borg results are unavailable for this attempt; inspect Activity and the saved backups."; state = "ok";}
+    if (!running && (reportedWarning || failed)) {
+        const auto issues = borg.value("issues").toArray();
+        for (const auto item : issues) {
+            const auto issue = item.toObject();
+            if (failed && issue.value("level") == "WARNING") continue;
+            explanation += "\n" + issue.value("message").toString().left(500); break;
+        }
+    }
     m_status->setText(title); m_summary->setText(explanation);
     m_destination->setText(c.value("repository").toString(c.value("mountpoint").toString())); m_destination->setToolTip("Filesystem UUID: " + c.value("uuid").toString());
     m_contents->setText(c.value("source").toString("/home/dist") + (c.value("include_system").toBool() ? " + system settings and local software" : "") + (c.value("package_recovery").toBool() ? " + software recovery list" : "") + " · Nested filesystems are skipped");
     m_storage->setText(QString("%1 · %2 · Leave %3 GiB free before starting").arg(c.value("scan_mode").toString() == "full_scan" ? "Full file scan" : "Incremental snapshots",c.value("compression").toString("zstd,3")).arg(c.value("reserve_gib").toInt(10)));
     m_schedule->setText(enabled ? stamp(t.value("NextElapseUSecRealtime").toString()) : "Schedule disabled");
-    m_attempt->setText(stamp(s.value("ExecMainExitTimestamp").toString()) + " · " + (running ? "Running" : stamp(s.value("Result").toString())));
+    m_attempt->setText(stamp(s.value("ExecMainExitTimestamp").toString()) + " · " + (running ? "Running" : reportedWarning ? "Completed with warnings" : failed ? "Failed" : outcome == "skipped" ? "Skipped" : stamp(s.value("Result").toString())));
     m_space->setText(mounted ? QString("%1 GiB available / %2 GiB total").arg(m_snapshot.value("free").toDouble()/1073741824.0,0,'f',1).arg(m_snapshot.value("total").toDouble()/1073741824.0,0,'f',1) : "Unavailable at configured mount path");
     renderLog();
     m_miniState->setText(title); m_miniNext->setText(enabled ? "Next: " + stamp(t.value("NextElapseUSecRealtime").toString()) : "Schedule disabled");
     m_tray.setIcon(statusIcon(state)); m_tray.setToolTip("M45 Drive Backuper — " + title + "\n" + explanation);
-    if (state == "warning") alert(title + s.value("ExecMainExitTimestamp").toString(),title,explanation);
-    else if (!m_demo) m_settings.remove("lastNotification");
+    if (state == "warning" || state == "error") alert(title + s.value("InvocationID").toString() + s.value("ExecMainExitTimestamp").toString(),title,explanation,state == "error");
+    else {m_lastNotification.clear(); if (!m_demo) m_settings.remove("lastNotification");}
     setBusy(m_busy);
 }
 
@@ -559,7 +584,7 @@ void Window::action(const QString &name, const QString &payload) {
             showArchives(result.value("archives").toArray());
             m_archiveHint->setText(QString("%1 snapshots · Last refreshed %2. Checkpoints may be incomplete; catalog entries do not verify integrity.").arg(m_archives->rowCount()).arg(QDateTime::currentDateTime().toString("HH:mm:ss")));
             m_feedback->setText("Backup list refreshed.");
-        } else {m_feedback->setText(result.value("message").toString()); if (name == "apply") m_loaded = false;}
+        } else {m_feedback->setText(result.value("message").toString()); if (name == "apply" || name == "upgrade-reporting") m_loaded = false;}
         setBusy(false); poll(); process->deleteLater();
     });
     const bool manifestInput = name == "packages-preview" || name == "packages-install";
@@ -622,6 +647,8 @@ void Window::updateEditState() {
     const auto exclusionDelta = exclusionChanges(m_savedPlan.value("excludes").toString(),m_excludes->text());
     if (!exclusionDelta.isEmpty()) m_changes->setText(m_changes->text() + "\n" + exclusionDelta);
     m_save->setEnabled(dirty && !m_busy && !running && (m_demo || !m_snapshot.isEmpty()));
+    m_updateReporting->setVisible(!m_demo && !m_snapshot.isEmpty() && !m_snapshot.value("config").toObject().value("warning_reporting").toBool());
+    m_updateReporting->setEnabled(!m_demo && !dirty && !m_busy && !running && !m_snapshot.isEmpty());
     m_discard->setEnabled(dirty && !m_busy);
     m_editBar->setVisible(dirty || m_tabs->currentIndex() == 1 || m_tabs->currentIndex() == 2);
     setWindowModified(dirty); setWindowTitle("M45 Drive Backuper[*]");
@@ -638,6 +665,18 @@ void Window::updateRecoveryStatus() {
 }
 
 void Window::renderLog() {
+    const auto report = m_snapshot.value("borg_report").toObject();
+    QStringList issues;
+    for (const auto item : report.value("issues").toArray()) {
+        const auto issue = item.toObject();
+        issues << issue.value("level").toString() + " · Borg " + issue.value("operation").toString() + ": " + issue.value("message").toString();
+    }
+    const auto outcome = report.value("outcome").toString();
+    if (issues.isEmpty() && (outcome == "warning" || outcome == "error")) issues << "The job reported a problem. Its detailed Borg messages are unavailable in the retained journal; review the job output below.";
+    if (m_snapshot.value("log_truncated").toBool()) issues << "Showing the latest 500 journal entries. Earlier messages may not be shown.";
+    m_borgMessages->setVisible(!issues.isEmpty()); m_borgHeading->setVisible(!issues.isEmpty());
+    const auto issueText = issues.join("\n\n");
+    if (m_borgMessages->toPlainText() != issueText) m_borgMessages->setPlainText(issueText);
     const QString filter = m_logSearch->text(); QStringList selected;
     for (const auto &line : m_snapshot.value("logs").toString().split('\n'))
         if (filter.isEmpty() || line.contains(filter,Qt::CaseInsensitive)) selected << line;
@@ -680,10 +719,11 @@ void Window::quitMonitor() {
     hide(); qApp->quit();
 }
 
-void Window::alert(const QString &key, const QString &title, const QString &message) {
-    if (m_demo || !m_notifications->isChecked() || m_settings.value("lastNotification").toString() == key) return;
-    m_tray.showMessage("M45 Drive Backuper — " + title,message,QSystemTrayIcon::Warning,10000);
-    m_settings.setValue("lastNotification",key);
+void Window::alert(const QString &key, const QString &title, const QString &message, bool critical) {
+    if (!m_notifications->isChecked() || m_lastNotification == key) return;
+    emit attentionRequested(title,message,critical);
+    m_lastNotification = key;
+    if (!m_demo) m_settings.setValue("lastNotification",key);
 }
 
 QString Window::driveRepository() const {

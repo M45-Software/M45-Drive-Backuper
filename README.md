@@ -39,7 +39,11 @@ Under **Preferences → Software recovery**, **Export an extra recovery copy…*
 
 **Mount configured drives when needed** runs before source checks and backup cleanup. It uses existing `/etc/fstab` entries whose target and UUID match, verifies the UUID again after mounting, and refuses to mount over another filesystem. It supports a source folder on a recorded filesystem as well as a whole source drive. The drives must be connected, and encrypted volumes must already be unlocked. It does not create fstab entries or format disks. A new drive without a matching fstab entry can be used while mounted, but must be mounted through the desktop when disconnected. The tray’s **Mount backup drives** action also uses this path.
 
-The tray shows running, completed and attention states. Notifications cover failed attempts, unavailable destinations or sources, low free space, disabled schedules and monitoring failures. Repeated identical alerts are suppressed; recovery allows a later recurrence to notify again. Notifications require the tray to be running and can be suppressed by desktop Do Not Disturb. The existing system-service failure alert remains available when the tray is closed.
+The tray shows running, completed, warning and error states. **Backup completed with warnings** uses an amber icon; failed attempts use a red icon and a critical notification. **Activity** shows Borg's actual warning/error messages separately from the full job output, including errors from cleanup commands. Repeated identical alerts are suppressed; a later attempt can notify again. Notifications also cover unavailable destinations or sources, low free space, disabled schedules and monitoring failures. They require the tray to be running and can be suppressed by desktop Do Not Disturb.
+
+For an existing job, **Enable Borg warning and error reporting…** on Overview updates the saved script after authentication, preserving the selected plan. Saving any backup-plan change also installs reporting. The job uses Borg's `--log-json`, keeps warning exit status 1 and error statuses, and records a final result in the journal. Maintenance warnings allow archive creation to continue, then remain visible in the final result. Preflight failures and skipped/locked attempts are distinguished from completed backups. An existing systemd `OnFailure` alert also runs when the job exits with warnings; the app distinguishes that warning result from a fatal error. No service failure policy is changed.
+
+Diagnostics are read only from the service's current invocation, so an earlier warning cannot contaminate a later success. The Activity view retains up to 500 journal entries and labels truncation. Journal permissions/retention may limit detailed messages; the app does not claim that unavailable diagnostics prove a warning-free backup.
 
 ## Choosing what to skip
 
@@ -63,7 +67,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 (cd build && cpack -G DEB)
-sudo apt install ./build/m45-drive-backuper_0.3.1_amd64.deb
+sudo apt install ./build/m45-drive-backuper_0.3.2_amd64.deb
 m45-drive-backuper --show
 ```
 
@@ -77,9 +81,25 @@ QT_QPA_PLATFORM=offscreen ./build/m45-drive-backuper --demo --page exclusions --
 
 Demo mode uses synthetic data. You can edit a plan, choose exclusions and review the result; it never invokes the helper, opens K4DirStat, saves preferences, registers the real D-Bus name, or sends notifications. Screenshot timestamps illustrate the sample failure rather than the current state of a machine.
 
+## Isolated backup test harness
+
+Run this as your normal desktop user, without sudo:
+
+```sh
+/usr/bin/python3 tests/backup_harness.py
+```
+
+Each invocation creates a fresh directory under `build/backup-lab/run-*`. Existing runs are never overwritten. Use `--output /path/to/lab` to choose another parent directory. The laboratory contains a small **source files** tree, a real Borg repository at **destination/repository**, sample system settings, generated recovery JSON, a **restored** copy, generated shell scripts, per-run logs, and **REPORT.txt** / **report.json**. The sample package inventory contains fake package names; do not use it to reinstall software.
+
+The harness uses the application's actual script adapter and recovery serializer, then executes the resulting shell job. Borg performs real creation, pruning, compaction, quota configuration, listing, extraction and `check --verify-data` operations. Checks cover selected/excluded data, changed and new files, historical snapshots, automatic recovery refresh, disabling recovery/system settings, restoring excluded data to future coverage, compression/full-scan settings, job-lock contention and early failure guards. A negative control deliberately omits recovery from an otherwise valid archive and verifies that our check catches it even when Borg's integrity check succeeds.
+
+Mount UUIDs, free-space readings, package-manager inventory, archive timestamps and selected Borg failures/cleanup warnings are controlled test inputs. The create-warning scenario uses a genuinely unreadable sample file. No real mounts, systemd actions, authentication, package installations, installed helper calls or live backup configuration changes occur. The separate Qt tests verify Overview/Activity messages, warning versus critical notification requests, duplicate suppression and clearing old diagnostics. Desktop notification delivery and physical drive handling need separate desktop/VM checks. The shell fixture in `tests/fixtures/local-system-backup.sh` represents the supported legacy job; the actual adapter upgrades its warning handling before execution. It is never copied from a user's live job at test time.
+
+The former warning-to-success gap is now a required regression check: Borg warning **1** must remain job warning **1**, and its message must survive parsing. Cleanup warnings/errors, fatal create errors, skipped runs and a later clean run are also checked. Every gap returns failure; `--strict` remains accepted for compatibility and is used by CTest. `--temporary` removes its run directory after reporting; omit it when you want to inspect artifacts. No data from the real backup repository is used.
+
 ## Interpretation and limitations
 
-The service's latest result is an attempt result, not proof of a valid or recent archive. Borg warnings are normalized to service success by the existing job; inspect the journal for details. The archive tab reads stored archive names/timestamps on demand with administrator authentication and a short Borg lock wait. Checkpoint archives may be incomplete. No archive integrity check or live percentage is provided; the existing script emits statistics after its runs. Root authentication may be cancelled without changing anything.
+The service's latest result is an attempt result, not proof of a valid or recent archive. Jobs that have not yet enabled the new reporting retain their previous warning handling; Overview offers the update. The archive tab reads stored archive names/timestamps on demand with administrator authentication and a short Borg lock wait. Checkpoint archives may be incomplete. No archive integrity check or live percentage is provided in the app; the script emits statistics after its runs. Root authentication may be cancelled without changing anything.
 
 Retention settings can delete old archives on a future backup. Copies of old settings cannot recover deleted archives. Settings files are replaced individually; rollback handles ordinary errors but cannot provide a filesystem-wide transaction across a power loss. An already-open Settings editor is not overwritten by status polling; reopen the app to load external edits before saving.
 

@@ -26,20 +26,27 @@ public:
     void selectPage(int page);
 public slots:
     void Show();
+signals:
+    void attentionRequested(const QString &title, const QString &message, bool critical);
 protected:
     void closeEvent(QCloseEvent *event) override;
 private:
+    friend class WindowTests;
     bool m_demo, m_polling = false, m_busy = false, m_loaded = false, m_loading = true;
     QJsonObject m_snapshot;
     QJsonObject m_savedPlan;
     QString m_revision, m_folderSource, m_folderRepository;
     QSettings m_settings;
+    QString m_lastNotification;
     QSystemTrayIcon m_tray;
     QMenu *m_menu;
     QAction *m_miniState, *m_miniNext, *m_runAction, *m_mountAction;
     QTabWidget *m_tabs;
     QLabel *m_status, *m_summary, *m_destination, *m_schedule, *m_attempt, *m_space, *m_feedback, *m_contents, *m_storage;
     QPlainTextEdit *m_logs;
+    QPlainTextEdit *m_borgMessages;
+    QLabel *m_borgHeading;
+    QPushButton *m_updateReporting;
     QTableWidget *m_archives;
     ExclusionEditor *m_excludes;
     QWidget *m_planPage, *m_exclusionsPage, *m_editBar;
@@ -69,6 +76,6 @@ private:
     void showArchives(const QJsonArray &archives);
     void openAnalyzer();
     void quitMonitor();
-    void alert(const QString &key, const QString &title, const QString &message);
+    void alert(const QString &key, const QString &title, const QString &message, bool critical = false);
     QString driveRepository() const;
 };

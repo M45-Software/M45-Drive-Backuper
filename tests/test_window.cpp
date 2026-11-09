@@ -18,6 +18,56 @@
 class WindowTests : public QObject {
     Q_OBJECT
 private slots:
+    void borgDiagnosticsReachOverviewActivityAndNotifications() {
+        Window window(true); window.Show(); window.m_notifications->setChecked(true);
+        QSignalSpy notifications(&window,&Window::attentionRequested);
+        auto snapshot = window.m_snapshot;
+        snapshot["mounted"] = true; snapshot["source_ready"] = true;
+        auto service = QJsonObject{{"ActiveState","failed"},{"Result","exit-code"},{"ExecMainCode","1"},
+            {"ExecMainStatus","1"},{"InvocationID","warning-run"},{"ExecMainExitTimestamp","warning-time"}};
+        snapshot["service"] = service;
+        snapshot["borg_report"] = QJsonObject{{"outcome","warning"},{"issues",QJsonArray{
+            QJsonObject{{"level","WARNING"},{"operation","create"},{"message","example.txt: Permission denied"}}}}};
+        snapshot["logs"] = "WARNING · Borg create: example.txt: Permission denied";
+        window.m_snapshot=snapshot; window.render();
+        QCOMPARE(window.m_status->text(),QString("Backup completed with warnings"));
+        QVERIFY(window.m_summary->text().contains("Permission denied"));
+        QVERIFY(window.m_miniState->text().contains("warnings"));
+        window.selectPage(4); QVERIFY(window.m_borgMessages->isVisible());
+        QVERIFY(window.m_borgMessages->toPlainText().contains("example.txt"));
+        QCOMPARE(notifications.count(),1); QCOMPARE(notifications[0][2].toBool(),false);
+        window.render(); QCOMPARE(notifications.count(),1);
+
+        service["Result"]="success"; service["ActiveState"]="inactive"; service["ExecMainStatus"]="0";
+        service["InvocationID"]="clean-run"; snapshot["service"]=service;
+        snapshot["borg_report"]=QJsonObject{{"outcome","success"},{"issues",QJsonArray{}}};
+        window.m_snapshot=snapshot; window.render();
+        QVERIFY(window.m_status->text().contains("completed")); QVERIFY(window.m_borgMessages->isHidden());
+        QVERIFY(window.m_borgMessages->toPlainText().isEmpty());
+
+        service["Result"]="exit-code"; service["ActiveState"]="failed"; service["ExecMainStatus"]="2";
+        service["InvocationID"]="error-run"; snapshot["service"]=service;
+        snapshot["borg_report"]=QJsonObject{{"outcome","error"},{"issues",QJsonArray{
+            QJsonObject{{"level","ERROR"},{"operation","compact"},{"message","No space left"}}}}};
+        window.m_snapshot=snapshot; window.render();
+        QCOMPARE(window.m_status->text(),QString("Last backup attempt failed"));
+        QVERIFY(window.m_borgMessages->toPlainText().contains("Borg compact: No space left"));
+        QCOMPARE(notifications.count(),2); QCOMPARE(notifications[1][2].toBool(),true);
+
+        // A failed preflight with exit 1 must never look like a Borg warning.
+        service["ExecMainStatus"]="1"; service["InvocationID"]="preflight-run"; snapshot["service"]=service;
+        snapshot["borg_report"]=QJsonObject{{"outcome","error"},{"issues",QJsonArray{}}};
+        window.m_snapshot=snapshot; window.render();
+        QCOMPARE(window.m_status->text(),QString("Last backup attempt failed"));
+        QCOMPARE(notifications.count(),3); QCOMPARE(notifications[2][2].toBool(),true);
+
+        // Timeout/signal failure overrides an earlier warning result.
+        service["Result"]="timeout"; service["InvocationID"]="timeout-run"; snapshot["service"]=service;
+        snapshot["borg_report"]=QJsonObject{{"outcome","warning"},{"issues",QJsonArray{}}};
+        window.m_snapshot=snapshot; window.render();
+        QCOMPARE(window.m_status->text(),QString("Last backup attempt failed"));
+        QCOMPARE(notifications.count(),4); QCOMPARE(notifications[3][2].toBool(),true);
+    }
     void previewDoesNotChangeSettings() {
         QTemporaryDir dir;
         QSettings::setPath(QSettings::NativeFormat,QSettings::UserScope,dir.path());

@@ -29,6 +29,7 @@ backup_rc=0
 borg create --stats --show-rc --compression zstd,3 --one-file-system \\
     --exclude-from /etc/local-system-backup.exclude --exclude-caches \\
     '::home-{now:%Y-%m-%dT%H:%M:%S}' /home/dist || backup_rc=$?
+exit "$backup_rc"
 '''
 
 

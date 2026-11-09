@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import recovery
+import reporting
 
 SCRIPT = Path('/usr/local/sbin/local-system-backup')
 EXCLUDES = Path('/etc/local-system-backup.exclude')
@@ -25,6 +26,9 @@ LOCK = Path('/run/lock/local-system-backup.lock')
 BACKUPS = Path('/var/lib/m45-drive-backuper/settings-backups')
 RECOVERY = Path('/var/lib/m45-drive-backuper/recovery/software-recovery.json')
 ENV = dict(os.environ, PATH='/usr/sbin:/usr/bin:/sbin:/bin', LC_ALL='C')
+CONFIG_FIELDS = {'mountpoint', 'hours', 'hourly', 'daily', 'weekly', 'monthly', 'excludes', 'revision',
+                 'source', 'source_kind', 'compression', 'scan_mode', 'reserve_gib', 'quota_gib',
+                 'exclude_caches', 'auto_mount', 'repository', 'destination_kind', 'include_system', 'package_recovery'}
 
 
 def run(*args, timeout=15, env=None, check=True):
@@ -38,7 +42,8 @@ def properties(unit):
     return dict(line.split('=', 1) for line in run(
         'systemctl', 'show', unit, '--no-pager', '-p', 'ActiveState', '-p', 'SubState',
         '-p', 'Result', '-p', 'ExecMainStartTimestamp', '-p', 'ExecMainExitTimestamp',
-        '-p', 'NextElapseUSecRealtime', '-p', 'UnitFileState', '-p', 'TimersCalendar').splitlines() if '=' in line)
+        '-p', 'NextElapseUSecRealtime', '-p', 'UnitFileState', '-p', 'TimersCalendar',
+        '-p', 'InvocationID', '-p', 'ExecMainStatus', '-p', 'ExecMainCode').splitlines() if '=' in line)
 
 
 def read_config():
@@ -74,6 +79,7 @@ def read_config():
                 auto_mount='# M45 auto mount: yes' in text,
                 include_system='# M45 include system settings: yes' in text,
                 package_recovery='# M45 software recovery: yes' in text,
+                warning_reporting='# M45 Borg reporting' in text,
                 compression=compression[1] if compression else 'zstd,3',
                 scan_mode='full_scan' if '--files-cache disabled' in text else 'incremental',
                 reserve_gib=int(reserve[1]) // 1073741824 if reserve else 10,
@@ -131,17 +137,23 @@ def status():
     if mounted:
         usage = shutil.disk_usage(config['mountpoint'])
         result.update(free=usage.free, total=usage.total)
-    logs = subprocess.run(['journalctl', '-u', SERVICE, '-n', '250', '--no-pager', '-o', 'short-iso'],
+    invocation = service.get('InvocationID', '')
+    journal_args = ['journalctl', '-u', SERVICE, '-n', '500', '--no-pager', '-o', 'cat']
+    if re.fullmatch('[a-f0-9]{32}', invocation):
+        journal_args.append('_SYSTEMD_INVOCATION_ID=' + invocation)
+    logs = subprocess.run(journal_args,
                           text=True, capture_output=True, timeout=15, env=ENV)
-    result['logs'] = logs.stdout.strip()
+    report, readable = reporting.parse(logs.stdout.strip())
+    # Never use an older invocation's diagnostics as the current attempt result.
+    result['borg_report'] = report if re.fullmatch('[a-f0-9]{32}', invocation) else dict(outcome='unknown', issues=[])
+    result['logs'] = readable
+    result['log_truncated'] = len(logs.stdout.splitlines()) >= 500
     result['log_error'] = logs.stderr.strip() if logs.returncode or not logs.stdout.strip() else ''
     return result
 
 
 def validate(data):
-    expected = {'mountpoint', 'hours', 'hourly', 'daily', 'weekly', 'monthly', 'excludes', 'revision',
-                'source', 'source_kind', 'compression', 'scan_mode', 'reserve_gib', 'quota_gib', 'exclude_caches', 'auto_mount', 'repository', 'destination_kind', 'include_system', 'package_recovery'}
-    if not isinstance(data, dict) or set(data) != expected:
+    if not isinstance(data, dict) or set(data) != CONFIG_FIELDS:
         raise ValueError('Unexpected configuration fields.')
     if not isinstance(data['revision'], str) or not re.fullmatch('[a-f0-9]{64}', data['revision']):
         raise ValueError('Invalid configuration revision; reopen settings.')
@@ -247,7 +259,7 @@ def replacement(text, data):
         text, count = re.subn(r'^(# Reclaim abandoned transaction data.*)$', lambda m: block + m[0], text, flags=re.M)
         if count != 1:
             raise ValueError('Unsupported repository setup block.')
-    return text
+    return reporting.upgrade_script(text)
 
 
 def atomic(path, content, mode):
@@ -392,7 +404,7 @@ def main():
         if args[0] == 'recovery-export':
             return dict(manifest=recovery.inventory(read_config()['source']))
         return recovery.restore(read_manifest())
-    if not args or args[0] not in ('apply', 'start', 'enable', 'disable', 'archives', 'mount', 'recovery-refresh', 'packages-install'):
+    if not args or args[0] not in ('apply', 'start', 'enable', 'disable', 'archives', 'mount', 'recovery-refresh', 'packages-install', 'upgrade-reporting'):
         raise ValueError('Unsupported action.')
     if os.geteuid() != 0:
         raise PermissionError('This action requires administrator authentication.')
@@ -400,6 +412,9 @@ def main():
         return apply(json.loads(base64.b64decode(args[1], validate=True)))
     if len(args) != 1:
         raise ValueError('Unexpected arguments.')
+    if args[0] == 'upgrade-reporting':
+        config = read_config()
+        return apply({key: config[key] for key in CONFIG_FIELDS})
     if args[0] == 'recovery-refresh':
         RECOVERY.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         manifest = recovery.inventory(read_config()['source'])
