@@ -1,6 +1,7 @@
 """Structured Borg diagnostics scoped to one systemd service invocation."""
 import json
 import re
+from datetime import datetime, timezone
 
 # Injected once into the supported job. No new privileged command or status file
 # is needed: systemd captures these messages with its invocation ID.
@@ -59,19 +60,58 @@ def upgrade_script(text):
 
 def parse(messages):
     """Parse output from one invocation; unknown/plain output stays readable."""
+    report, readable, _ = parse_records([dict(message=line) for line in messages.splitlines()])
+    return report, readable
+
+
+def parse_journal(messages):
+    """Keep journal timestamps and priorities alongside the readable Borg output."""
+    records = []
+    for line in messages.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            entry = None
+        if not isinstance(entry, dict) or not isinstance(entry.get('MESSAGE'), str):
+            records.append(dict(message=line))
+            continue
+        timestamp = ''
+        try:
+            timestamp = datetime.fromtimestamp(int(entry['__REALTIME_TIMESTAMP']) / 1_000_000,
+                                              timezone.utc).isoformat(timespec='seconds')
+        except (KeyError, ValueError, TypeError, OverflowError, OSError):
+            pass
+        priority = str(entry.get('PRIORITY', '6'))
+        level = {'0': 'CRITICAL', '1': 'CRITICAL', '2': 'CRITICAL', '3': 'ERROR',
+                 '4': 'WARNING', '5': 'INFO', '6': 'INFO', '7': 'DEBUG'}.get(priority, 'INFO')
+        for message in entry['MESSAGE'].splitlines():
+            records.append(dict(message=message, timestamp=timestamp, level=level))
+    return parse_records(records)
+
+
+def parse_records(records):
     report = dict(outcome='unknown', issues=[], operations=[], result=None)
     readable = []
     operation = ''
-    for line in messages.splitlines():
+    activity = []
+    for record in records:
+        line = record['message']
+
+        def emit(text, level=None, source='Service', message=None):
+            readable.append(text)
+            activity.append(dict(timestamp=record.get('timestamp', ''),
+                                 level=level or record.get('level', 'INFO'), source=source,
+                                 message=message if message is not None else text, raw=text))
         if line.startswith('M45_BORG_BEGIN '):
             operation = line.removeprefix('M45_BORG_BEGIN ')
-            readable.append('Borg ' + operation + ' started')
+            emit('Borg ' + operation + ' started', 'INFO', 'Borg ' + operation, 'Started')
             continue
         match = re.fullmatch(r'M45_BORG_RESULT ([a-z-]+) (\d+)', line)
         if match:
             name, rc = match[1], int(match[2])
             report['operations'].append(dict(operation=name, exit_code=rc))
-            readable.append(f'Borg {name} exited {rc}')
+            emit(f'Borg {name} exited {rc}', 'INFO' if rc == 0 else 'WARNING' if rc == 1 else 'ERROR',
+                 'Borg ' + name, f'Finished · exit code {rc}')
             operation = ''
             continue
         if line.startswith('M45_BACKUP_RESULT '):
@@ -82,7 +122,10 @@ def parse(messages):
                         and 0 <= result['exit_code'] <= 255 and -1 <= result['borg_exit_code'] <= 255
                         and -1 <= result['create_exit_code'] <= 255 and result['finished'] in (0, 1)):
                     report['result'] = result
-                    readable.append('Backup job exited ' + str(result['exit_code']))
+                    emit('Backup job exited ' + str(result['exit_code']),
+                         'INFO' if result['exit_code'] == 0 else 'WARNING' if (result['exit_code'] == 1
+                         and result['borg_exit_code'] == 1 and result['create_exit_code'] in (0, 1)
+                         and result['finished']) else 'ERROR', 'Backup job')
                     continue
             except (ValueError, TypeError):
                 pass
@@ -95,11 +138,11 @@ def parse(messages):
             if level not in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'):
                 level = 'INFO'
             message = entry['message']
-            readable.append(f'{level} · Borg {operation}: {message}')
+            emit(f'{level} · Borg {operation}: {message}', level, ('Borg ' + operation).strip(), message)
             if level in ('WARNING', 'ERROR', 'CRITICAL'):
                 report['issues'].append(dict(level=level, operation=operation, message=message))
         else:
-            readable.append(line)
+            emit(line)
     result = report['result']
     if result:
         rc, borg_rc, create_rc = (result[k] for k in ('exit_code', 'borg_exit_code', 'create_exit_code'))
@@ -111,4 +154,4 @@ def parse(messages):
             report['outcome'] = 'error'
     elif report['issues'] or report['operations']:
         report['outcome'] = 'incomplete'
-    return report, '\n'.join(readable)
+    return report, '\n'.join(readable), activity

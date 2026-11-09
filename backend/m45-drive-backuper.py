@@ -138,15 +138,16 @@ def status():
         usage = shutil.disk_usage(config['mountpoint'])
         result.update(free=usage.free, total=usage.total)
     invocation = service.get('InvocationID', '')
-    journal_args = ['journalctl', '-u', SERVICE, '-n', '500', '--no-pager', '-o', 'cat']
+    journal_args = ['journalctl', '-u', SERVICE, '-n', '500', '--no-pager', '-o', 'json']
     if re.fullmatch('[a-f0-9]{32}', invocation):
         journal_args.append('_SYSTEMD_INVOCATION_ID=' + invocation)
     logs = subprocess.run(journal_args,
                           text=True, capture_output=True, timeout=15, env=ENV)
-    report, readable = reporting.parse(logs.stdout.strip())
+    report, readable, activity = reporting.parse_journal(logs.stdout.strip())
     # Never use an older invocation's diagnostics as the current attempt result.
     result['borg_report'] = report if re.fullmatch('[a-f0-9]{32}', invocation) else dict(outcome='unknown', issues=[])
     result['logs'] = readable
+    result['activity'] = activity
     result['log_truncated'] = len(logs.stdout.splitlines()) >= 500
     result['log_error'] = logs.stderr.strip() if logs.returncode or not logs.stdout.strip() else ''
     return result

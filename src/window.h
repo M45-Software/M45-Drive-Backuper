@@ -6,6 +6,7 @@
 
 class QLabel;
 class QTabWidget;
+class QStackedWidget;
 class QPlainTextEdit;
 class QLineEdit;
 class QComboBox;
@@ -44,6 +45,10 @@ private:
     QTabWidget *m_tabs;
     QLabel *m_status, *m_summary, *m_destination, *m_schedule, *m_attempt, *m_space, *m_feedback, *m_contents, *m_storage;
     QPlainTextEdit *m_logs;
+    QTableWidget *m_activity;
+    QStackedWidget *m_logViews;
+    QComboBox *m_logLevel;
+    QLabel *m_logCount, *m_logAccess;
     QPlainTextEdit *m_borgMessages;
     QLabel *m_borgHeading;
     QPushButton *m_updateReporting;

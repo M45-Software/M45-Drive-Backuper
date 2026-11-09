@@ -28,6 +28,37 @@ class ReportingTests(unittest.TestCase):
         self.assertIn('WARNING · Borg create: file.txt: Permission denied', readable)
         self.assertIn('ERROR · Borg compact: No space left', readable)
 
+    def test_journal_events_keep_time_operation_and_multiline_statistics(self):
+        def journal(text, priority='6', timestamp='1794143038000000'):
+            return json.dumps(dict(MESSAGE=text, PRIORITY=priority, __REALTIME_TIMESTAMP=timestamp))
+        statistics = 'Original size:      12.4 GB\nDeduplicated size:   42.0 MB'
+        records = [journal('M45_BORG_BEGIN create'), journal(message('INFO', statistics), '3'),
+                   journal(message('WARNING', '<file>&.txt: Permission denied')),
+                   journal('M45_BORG_RESULT create 1'), journal(result(1,1,1))]
+        report, readable, events = reporting.parse_journal('\n'.join(records))
+        self.assertEqual(report['outcome'], 'warning')
+        self.assertEqual(events[1]['timestamp'], '2026-11-08T13:03:58+00:00')
+        self.assertEqual(events[1]['message'], statistics)
+        self.assertEqual(events[1]['level'], 'INFO')  # Borg's level overrides stderr priority.
+        self.assertEqual(events[2]['source'], 'Borg create')
+        self.assertEqual(events[2]['level'], 'WARNING')
+        self.assertIn('<file>&.txt', events[2]['message'])
+        self.assertIn(statistics, events[1]['raw'])
+        self.assertIn(statistics, readable)
+        self.assertEqual(events[-1]['level'], 'WARNING')
+
+    def test_plain_journal_errors_and_invalid_timestamps_remain_visible(self):
+        records = [json.dumps(dict(MESSAGE='Service could not start', PRIORITY='3',
+                                   __REALTIME_TIMESTAMP='invalid')),
+                   'unknown journal output', json.dumps(dict(MESSAGE=result(1,-1,-1,0)))]
+        report, readable, events = reporting.parse_journal('\n'.join(records))
+        self.assertEqual(events[0]['timestamp'], '')
+        self.assertEqual(events[0]['level'], 'ERROR')
+        self.assertEqual(events[1]['message'], 'unknown journal output')
+        self.assertEqual(events[-1]['level'], 'ERROR')
+        self.assertEqual(report['outcome'], 'error')
+        self.assertIn('Service could not start', readable)
+
     def test_exit_one_is_only_a_warning_after_completed_borg_work(self):
         for summary, expected in [(result(1,1,1), 'warning'), (result(1,1,0), 'warning'),
                                   (result(1,-1,-1,0), 'error'), (result(1,1,-1,0), 'error'),

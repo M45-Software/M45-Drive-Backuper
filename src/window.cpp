@@ -11,6 +11,11 @@
 #include <QHeaderView>
 #include <QTableWidget>
 #include <QTabBar>
+#include <QListWidget>
+#include <QStyle>
+#include <QStackedWidget>
+#include <QRegularExpression>
+#include <QFontDatabase>
 #include <QScrollBar>
 #include <QDateTime>
 #include <QDir>
@@ -72,7 +77,7 @@ QLabel *label(const QString &text = {}) {
     auto *l = new QLabel(text); l->setTextFormat(Qt::PlainText); l->setWordWrap(true); l->setTextInteractionFlags(Qt::TextSelectableByMouse); return l;
 }
 QWidget *page(QTabWidget *tabs, const QString &name, QVBoxLayout *&layout) {
-    auto *w = new QWidget; layout = new QVBoxLayout(w); layout->setContentsMargins(20,20,20,20); layout->setSpacing(14); tabs->addTab(w, name); return w;
+    auto *w = new QWidget; layout = new QVBoxLayout(w); layout->setContentsMargins(0,0,0,0); layout->setSpacing(14); tabs->addTab(w, name); return w;
 }
 }
 
@@ -81,32 +86,89 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     connect(this,&Window::attentionRequested,this,[this](const QString &title,const QString &message,bool critical) {
         if (!m_demo) m_tray.showMessage("M45 Drive Backuper — " + title,message,critical ? QSystemTrayIcon::Critical : QSystemTrayIcon::Warning,10000);
     });
-    setWindowTitle("M45 Drive Backuper"); resize(1000, 790); setWindowIcon(statusIcon("ok"));
-    auto *body = new QWidget; auto *outer = new QVBoxLayout(body); outer->setContentsMargins(22,20,22,16); outer->setSpacing(14);
-    auto *heading = label("M45 Drive Backuper"); auto font = heading->font(); font.setPointSize(22); font.setBold(true); heading->setFont(font); outer->addWidget(heading);
-    outer->addWidget(label(demo ? "PREVIEW · Synthetic data. Machine settings and backups are unchanged." : "Your backups, at a glance"));
-    m_tabs = new QTabWidget; outer->addWidget(m_tabs, 1); setCentralWidget(body);
+    setWindowTitle("M45 Drive Backuper"); resize(1120, 840); setMinimumSize(940, 700); setWindowIcon(statusIcon("ok"));
+    // Use palette roles so the workspace follows both light and dark desktop themes.
+    setStyleSheet(R"(
+        QWidget#workspace { background: palette(base); }
+        QFrame#sidebar { background: palette(window); border-right: 1px solid palette(mid); }
+        QLabel[role="eyebrow"] { color: palette(text); font-size: 10pt; font-weight: 600; }
+        QListWidget#navigation { background: transparent; border: none; outline: none; }
+        QListWidget#navigation::item { padding: 12px 14px; margin: 3px 0; border-radius: 6px; }
+        QListWidget#navigation::item:selected { background: palette(highlight); color: palette(highlighted-text); font-weight: 600; }
+        QListWidget#navigation::item:hover:!selected { background: palette(alternate-base); }
+        QTabWidget::pane { border: none; }
+        QScrollArea { border: none; background: transparent; }
+        QScrollArea > QWidget > QWidget { background: palette(base); }
+        QGroupBox { background: palette(base); border: 1px solid palette(mid); border-radius: 8px; margin-top: 10px; padding: 14px 12px 10px; font-weight: 600; }
+        QGroupBox::title { subcontrol-origin: margin; left: 16px; padding: 0 6px; }
+        QFrame#statusCard { background: palette(alternate-base); border-radius: 8px; border-left: 4px solid palette(highlight); }
+        QFrame#statusCard[state="warning"] { border-left-color: #b87917; }
+        QFrame#statusCard[state="error"] { border-left-color: #c94d48; }
+        QFrame#statusCard[state="ok"] { border-left-color: #338562; }
+        QPushButton { padding: 8px 14px; border-radius: 5px; border: 1px solid palette(mid); background: palette(button); color: palette(button-text); }
+        QPushButton:hover { border-color: palette(highlight); }
+        QPushButton:pressed { background: palette(alternate-base); }
+        QPushButton:disabled { color: palette(mid); }
+        QPushButton[primary="true"] { background: palette(highlight); color: palette(highlighted-text); border: 1px solid palette(highlight); font-weight: 600; }
+        QPushButton[primary="true"]:disabled { background: palette(window); color: palette(mid); border-color: palette(mid); }
+        QLineEdit, QComboBox, QSpinBox { min-height: 26px; padding: 3px 6px; }
+        QToolButton { padding: 8px; }
+        QHeaderView::section { padding: 10px 8px; border: none; background: palette(window); }
+        QTableView, QTreeView, QPlainTextEdit { border: 1px solid palette(mid); border-radius: 5px; }
+        QTableView::item, QTreeView::item { padding: 7px; }
+        QWidget#editBar { background: palette(window); border-radius: 6px; }
+    )");
+    auto *body = new QWidget; body->setObjectName("workspace");
+    auto *shell = new QHBoxLayout(body); shell->setContentsMargins(0,0,0,0); shell->setSpacing(0);
+    auto *sidebar = new QFrame; sidebar->setObjectName("sidebar"); sidebar->setFixedWidth(204);
+    auto *side = new QVBoxLayout(sidebar); side->setContentsMargins(16,28,16,20); side->setSpacing(12);
+    auto *brand = label("M45"); auto font = brand->font(); font.setPointSize(25); font.setBold(true); brand->setFont(font); side->addWidget(brand);
+    side->addWidget(label("DRIVE BACKUPER")); side->addSpacing(24);
+    auto *navigation = new QListWidget; navigation->setObjectName("navigation"); navigation->setAccessibleName("Main navigation");
+    navigation->addItems({"Overview", "Backup plan", "Skip files", "Saved backups", "Activity", "Preferences"});
+    side->addWidget(navigation,1);
+    auto *trayNote = label("Runs quietly in your tray.\nBackups continue when this window is closed."); side->addWidget(trayNote);
+    shell->addWidget(sidebar);
+    auto *content = new QWidget; auto *outer = new QVBoxLayout(content); outer->setContentsMargins(28,26,28,18); outer->setSpacing(18); shell->addWidget(content,1);
+    auto *header = new QHBoxLayout;
+    auto *heading = label("Overview"); font.setPointSize(24); heading->setFont(font); header->addWidget(heading,1);
+    if (demo) {auto *badge = label("PREVIEW · Sample data"); badge->setMinimumWidth(160); badge->setToolTip("Machine settings and backups are unchanged."); header->addWidget(badge);}
+    outer->addLayout(header);
+    m_tabs = new QTabWidget; m_tabs->tabBar()->hide(); outer->addWidget(m_tabs, 1); setCentralWidget(body);
     QVBoxLayout *layout;
     page(m_tabs, "Overview", layout);
     auto *overviewScroll = new QScrollArea; overviewScroll->setWidgetResizable(true); overviewScroll->setFrameShape(QFrame::NoFrame);
     auto *overviewBody = new QWidget; auto *overviewLayout = new QVBoxLayout(overviewBody); overviewLayout->setContentsMargins(0,0,8,0); overviewLayout->setSpacing(14);
     overviewScroll->setWidget(overviewBody); layout->addWidget(overviewScroll); layout = overviewLayout;
-    m_status = label("Reading backup status…"); font = m_status->font(); font.setPointSize(17); font.setBold(true); m_status->setFont(font); layout->addWidget(m_status);
-    m_summary = label(); layout->addWidget(m_summary);
+    auto *statusCard = new QFrame; statusCard->setObjectName("statusCard");
+    auto *statusLayout = new QVBoxLayout(statusCard); statusLayout->setContentsMargins(20,20,20,20); statusLayout->setSpacing(12);
+    auto *statusCaption = label("BACKUP STATUS"); statusCaption->setProperty("role","eyebrow"); statusLayout->addWidget(statusCaption);
+    m_status = label("Reading backup status…"); font = m_status->font(); font.setPointSize(17); font.setBold(true); m_status->setFont(font); statusLayout->addWidget(m_status);
+    m_summary = label(); statusLayout->addWidget(m_summary);
+    auto *resolve = new QPushButton("Review backup plan →"); resolve->setObjectName("statusAction");
+    statusLayout->addWidget(resolve,0,Qt::AlignLeft);
+    connect(resolve,&QPushButton::clicked,this,[this] {
+        selectPage(findChild<QPushButton *>("statusAction")->property("targetPage").toInt());
+    });
+    layout->addWidget(statusCard);
     m_updateReporting = new QPushButton("Enable Borg warning and error reporting…");
     m_updateReporting->setToolTip("Update the saved backup job to retain Borg results. Your sources, exclusions, schedule and retention stay the same. Administrator authentication is required.");
     layout->addWidget(m_updateReporting,0,Qt::AlignLeft);
     connect(m_updateReporting,&QPushButton::clicked,this,[this] {action("upgrade-reporting");});
-    auto *group = new QGroupBox("Backup plan"); auto *form = new QFormLayout(group); form->setVerticalSpacing(16);
     m_destination = label(); m_schedule = label(); m_attempt = label(); m_space = label();
-    form->addRow("Destination", m_destination); form->addRow("Next scheduled run", m_schedule); form->addRow("Last attempt", m_attempt); form->addRow("Disk capacity", m_space);
+    auto *timing = new QHBoxLayout; timing->setSpacing(16);
+    auto metric = [timing](const QString &title, QLabel *value) {
+        auto *card = new QGroupBox(title); auto *box = new QVBoxLayout(card); box->addWidget(value); timing->addWidget(card,1);
+    };
+    metric("Next scheduled run",m_schedule); metric("Last attempt",m_attempt); layout->addLayout(timing);
+    auto *group = new QGroupBox("Your backup plan"); auto *form = new QFormLayout(group); form->setVerticalSpacing(16); form->setHorizontalSpacing(24);
+    form->addRow("Destination", m_destination); form->addRow("Available space", m_space);
     m_contents = label(); m_storage = label();
-    form->addRow("Backup contents", m_contents);
-    form->addRow("Storage", m_storage); layout->addWidget(group);
+    form->addRow("Contents", m_contents); form->addRow("Storage", m_storage); layout->addWidget(group);
     auto *buttons = new QHBoxLayout;
     m_run = new QPushButton("Back up now"); m_enable = new QPushButton("Enable schedule"); m_disable = new QPushButton("Disable schedule");
     m_mountDrives = new QPushButton("Mount drives…");
-    m_run->setMinimumHeight(42); auto runFont = m_run->font(); runFont.setBold(true); m_run->setFont(runFont);
+    m_run->setProperty("primary",true); m_run->setMinimumHeight(42); auto runFont = m_run->font(); runFont.setBold(true); m_run->setFont(runFont);
     auto *more = new QToolButton; more->setText("More"); more->setPopupMode(QToolButton::InstantPopup); auto *moreMenu = new QMenu(more); more->setMenu(moreMenu);
     auto *mountNow = moreMenu->addAction("Mount drives now…",m_mountDrives,&QPushButton::click);
     auto *enable = moreMenu->addAction("Enable automatic backups…",m_enable,&QPushButton::click);
@@ -115,11 +177,10 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     for (auto *button : {m_mountDrives,m_enable,m_disable}) {button->setParent(body); button->hide();}
     buttons->addWidget(m_run); buttons->addWidget(more); buttons->addStretch();
     auto *refresh = new QPushButton("Refresh"); buttons->addWidget(refresh); layout->addLayout(buttons);
-    auto *shortcuts = new QHBoxLayout;
-    auto *plan = new QPushButton("Edit backup plan"); auto *skip = new QPushButton("Choose what to skip");
-    shortcuts->addWidget(plan); shortcuts->addWidget(skip); shortcuts->addStretch(); layout->addLayout(shortcuts);
-    connect(plan,&QPushButton::clicked,this,[this] {selectPage(1);}); connect(skip,&QPushButton::clicked,this,[this] {selectPage(2);});
-    layout->addWidget(label("Closing this window keeps monitoring in the system tray. Backup jobs continue independently.")); layout->addStretch();
+    auto *plan = new QPushButton("Edit backup plan");
+    buttons->insertWidget(2,plan);
+    connect(plan,&QPushButton::clicked,this,[this] {selectPage(1);});
+    layout->addStretch();
     connect(refresh, &QPushButton::clicked, this, &Window::poll);
     connect(m_run, &QPushButton::clicked, this, [this] {action("start");});
     connect(m_mountDrives, &QPushButton::clicked, this, [this] {action("mount");});
@@ -138,17 +199,40 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     layout->addWidget(m_archives,1); m_archiveHint = label("No catalog loaded yet. Connect the backup drive and refresh. The catalog does not verify backup integrity."); layout->addWidget(m_archiveHint);
     connect(m_archiveRefresh, &QPushButton::clicked, this, [this] {action("archives");});
     page(m_tabs, "Activity", layout);
-    layout->addWidget(label("Recent backup output. Statistics appear when Borg reports them; a live percentage is not available."));
+    layout->addWidget(label("Activity from the backup service. Times use your local timezone; statistics appear when Borg reports them."));
     m_borgHeading = label("Borg warnings and errors for this attempt"); layout->addWidget(m_borgHeading);
     m_borgMessages = new QPlainTextEdit; m_borgMessages->setReadOnly(true); m_borgMessages->setObjectName("borgMessages");
     m_borgMessages->setMaximumHeight(180); layout->addWidget(m_borgMessages);
-    auto *logTools = new QHBoxLayout; m_logSearch = new QLineEdit; m_logSearch->setPlaceholderText("Filter activity…"); m_logSearch->setClearButtonEnabled(true);
-    auto *copyLog = new QPushButton("Copy visible log"); m_followLog = new QCheckBox("Follow latest"); m_followLog->setChecked(true);
-    logTools->addWidget(m_logSearch,1); logTools->addWidget(m_followLog); logTools->addWidget(copyLog); layout->addLayout(logTools);
-    m_logs = new QPlainTextEdit; m_logs->setReadOnly(true); m_logs->setObjectName("activityLog"); layout->addWidget(m_logs);
+    auto *logTools = new QHBoxLayout; m_logSearch = new QLineEdit; m_logSearch->setPlaceholderText("Search activity…"); m_logSearch->setClearButtonEnabled(true);
+    m_logSearch->setObjectName("activityFilter"); m_logSearch->setAccessibleName("Search activity");
+    m_logLevel = new QComboBox; m_logLevel->setObjectName("activityLevel"); m_logLevel->setAccessibleName("Activity severity");
+    m_logLevel->addItems({"All activity", "Warnings & errors"});
+    logTools->addWidget(m_logSearch,1); logTools->addWidget(m_logLevel); layout->addLayout(logTools);
+    auto *viewTools = new QHBoxLayout;
+    m_logCount = label(); m_logCount->setObjectName("activityCount"); viewTools->addWidget(m_logCount,1);
+    auto *rawLog = new QCheckBox("Plain text"); rawLog->setObjectName("rawActivity");
+    auto *copyLog = new QPushButton("Copy visible log"); copyLog->setObjectName("copyActivity");
+    m_followLog = new QCheckBox("Follow latest"); m_followLog->setChecked(true);
+    viewTools->addWidget(rawLog); viewTools->addWidget(m_followLog); viewTools->addWidget(copyLog); layout->addLayout(viewTools);
+    m_logAccess = label(); m_logAccess->setObjectName("activityAccess"); layout->addWidget(m_logAccess);
+    m_logViews = new QStackedWidget; layout->addWidget(m_logViews,1);
+    m_activity = new QTableWidget(0,4); m_activity->setObjectName("activityTable"); m_activity->setAccessibleName("Backup activity events");
+    m_activity->setHorizontalHeaderLabels({"Time", "Level", "Source", "Message"});
+    m_activity->setEditTriggers(QAbstractItemView::NoEditTriggers); m_activity->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_activity->setAlternatingRowColors(true); m_activity->setShowGrid(false); m_activity->setWordWrap(true);
+    m_activity->verticalHeader()->hide(); m_activity->verticalHeader()->setMinimumSectionSize(48);
+    m_activity->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    for (int column=0;column<3;++column) m_activity->horizontalHeader()->setSectionResizeMode(column,QHeaderView::Fixed);
+    m_activity->setColumnWidth(0,125); m_activity->setColumnWidth(1,108); m_activity->setColumnWidth(2,110);
+    m_activity->horizontalHeader()->setSectionResizeMode(3,QHeaderView::Stretch); m_logViews->addWidget(m_activity);
+    m_logs = new QPlainTextEdit; m_logs->setReadOnly(true); m_logs->setObjectName("activityLog");
+    m_logs->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont)); m_logs->setLineWrapMode(QPlainTextEdit::NoWrap); m_logViews->addWidget(m_logs);
+    connect(rawLog,&QCheckBox::toggled,this,[this](bool raw) {m_logViews->setCurrentIndex(raw ? 1 : 0);});
     connect(m_logSearch,&QLineEdit::textChanged,this,&Window::renderLog);
-    m_logSearch->setObjectName("activityFilter");
-    connect(m_followLog,&QCheckBox::toggled,this,[this](bool follow) {if (follow) m_logs->verticalScrollBar()->setValue(m_logs->verticalScrollBar()->maximum());});
+    connect(m_logLevel,&QComboBox::currentIndexChanged,this,&Window::renderLog);
+    connect(m_followLog,&QCheckBox::toggled,this,[this](bool follow) {
+        if (follow) {m_logs->verticalScrollBar()->setValue(m_logs->verticalScrollBar()->maximum()); m_activity->scrollToBottom();}
+    });
     connect(copyLog,&QPushButton::clicked,this,[this] {QApplication::clipboard()->setText(m_logs->toPlainText());});
     page(m_tabs, "Backup plan", layout);
     m_planPage = m_tabs->widget(3);
@@ -156,7 +240,9 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     auto *settingsBody = new QWidget; auto *settingsLayout = new QVBoxLayout(settingsBody); settingsLayout->setContentsMargins(0,0,8,0); settingsLayout->setSpacing(12);
     scroll->setWidget(settingsBody); layout->addWidget(scroll); layout = settingsLayout;
     layout->addWidget(label("Choose your source, destination and schedule. Use Skip files to leave out downloads, caches or anything else you don’t need."));
-    auto *settingsForm = new QFormLayout; settingsForm->setVerticalSpacing(10);
+    auto *sourceGroup = new QGroupBox("1   What to back up");
+    auto *settingsForm = new QFormLayout(sourceGroup); settingsForm->setVerticalSpacing(8); settingsForm->setHorizontalSpacing(18);
+    layout->addWidget(sourceGroup);
     m_sourceKind = new QComboBox; m_sourceKind->setObjectName("sourceKind");
     m_sourceKind->addItem("Folder", "folder"); m_sourceKind->addItem("Mounted drive", "drive");
     settingsForm->addRow("Back up", m_sourceKind);
@@ -187,22 +273,25 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     m_packageRecovery = new QCheckBox("Include package recovery file in every backup"); m_packageRecovery->setObjectName("packageRecovery");
     m_packageRecovery->setToolTip("Automatically refresh package names, versions and reinstall information, then store the file in the same backup snapshot. Applies to scheduled and manual backups. Save changes to enable or disable it.");
     settingsForm->addRow("",m_packageRecovery);
+    auto *destinationGroup = new QGroupBox("2   Where to keep it");
+    auto *destinationForm = new QFormLayout(destinationGroup); destinationForm->setVerticalSpacing(8); destinationForm->setHorizontalSpacing(18);
+    layout->addWidget(destinationGroup);
     m_destinationKind = new QComboBox; m_destinationKind->setObjectName("destinationKind");
-    m_destinationKind->addItem("A folder","folder"); m_destinationKind->addItem("This drive","drive"); settingsForm->addRow("Save backups to",m_destinationKind);
+    m_destinationKind->addItem("A folder","folder"); m_destinationKind->addItem("This drive","drive"); destinationForm->addRow("Save backups to",m_destinationKind);
     auto *destinationRow = new QWidget; auto *destinationLayout = new QHBoxLayout(destinationRow); destinationLayout->setContentsMargins(0,0,0,0);
     m_repository = new QLineEdit; m_repository->setObjectName("repositoryPath"); m_repository->setPlaceholderText("Choose an empty folder for your backups");
     auto *destinationBrowse = new QPushButton("Choose / create folder…"); destinationLayout->addWidget(m_repository,1); destinationLayout->addWidget(destinationBrowse);
-    settingsForm->addRow("Backup folder",destinationRow);
+    destinationForm->addRow("Backup folder",destinationRow);
     connect(destinationBrowse,&QPushButton::clicked,this,[this] {
         QFileDialog::Options options = QFileDialog::ShowDirsOnly;
         if (m_demo) options |= QFileDialog::ReadOnly;
         const auto path = QFileDialog::getExistingDirectory(this,"Choose or create an empty backup folder",m_repository->text(),options);
         if (!path.isEmpty()) m_repository->setText(path);
     });
-    m_destinationDrive = new QComboBox; m_destinationDrive->setObjectName("destinationDrive"); settingsForm->addRow("Backup drive",m_destinationDrive); settingsForm->setRowVisible(m_destinationDrive,false);
+    m_destinationDrive = new QComboBox; m_destinationDrive->setObjectName("destinationDrive"); destinationForm->addRow("Backup drive",m_destinationDrive); destinationForm->setRowVisible(m_destinationDrive,false);
     auto *destinationHint = label(); destinationHint->setObjectName("destinationHint");
     destinationHint->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Maximum);
-    settingsForm->addRow("",destinationHint);
+    destinationForm->addRow("",destinationHint);
     auto updateDestinationHint = [this,destinationHint] {
         destinationHint->setText(m_destinationKind->currentData() == "drive"
             ? "Backup folder: " + m_repository->text() + "\nOther files on this drive are kept."
@@ -215,22 +304,22 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     connect(m_destinationDrive,&QComboBox::currentIndexChanged,this,[this](int index) {
         if (!m_loading && index >= 0 && m_destinationKind->currentData() == "drive") {m_repository->setText(driveRepository()); m_autoMount->setChecked(true);}
     });
-    connect(m_destinationKind,&QComboBox::currentIndexChanged,this,[this,settingsForm,destinationRow](int) {
+    connect(m_destinationKind,&QComboBox::currentIndexChanged,this,[this,destinationForm,destinationRow](int) {
         const bool drive = m_destinationKind->currentData() == "drive";
-        settingsForm->setRowVisible(destinationRow,!drive); settingsForm->setRowVisible(m_destinationDrive,drive);
+        destinationForm->setRowVisible(destinationRow,!drive); destinationForm->setRowVisible(m_destinationDrive,drive);
         if (!m_loading && drive && m_destinationDrive->currentIndex() >= 0) {m_repository->setText(driveRepository()); m_autoMount->setChecked(true);}
         if (!m_loading && !drive) m_repository->setText(m_folderRepository);
     });
     m_interval = new QComboBox;
     for (int h : {1,2,3,4,6,8,12,24}) m_interval->addItem(h == 24 ? "Every day" : h == 1 ? "Every hour" : QString("Every %1 hours").arg(h), h);
-    settingsForm->addRow("Schedule", m_interval);
-    layout->addLayout(settingsForm);
+    auto *scheduleGroup = new QGroupBox("3   When to back up"); auto *scheduleForm = new QFormLayout(scheduleGroup);
+    scheduleForm->addRow("Run automatically", m_interval); layout->addWidget(scheduleGroup);
     auto *simpleActions = new QHBoxLayout;
     auto *chooseSkips = new QPushButton("Choose what to skip…"); chooseSkips->setMinimumHeight(36);
     auto *defaults = new QPushButton("Use recommended settings"); defaults->setObjectName("recommendedDefaults");
     simpleActions->addWidget(chooseSkips); simpleActions->addWidget(defaults); simpleActions->addStretch(); layout->addLayout(simpleActions);
     connect(chooseSkips,&QPushButton::clicked,this,[this] {selectPage(2);});
-    layout->addWidget(label("Your saved settings are loaded. Recommended settings use fast, space-saving backups and mount configured drives when needed."));
+    defaults->setToolTip("Use fast, space-saving backups and mount configured drives when needed. Review and save to apply.");
     auto *advancedToggle = new QToolButton; advancedToggle->setObjectName("advancedToggle"); advancedToggle->setText("Advanced options"); advancedToggle->setCheckable(true); advancedToggle->setArrowType(Qt::RightArrow); advancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     layout->addWidget(advancedToggle,0,Qt::AlignLeft);
     auto *advanced = new QWidget; advanced->setObjectName("advancedOptions"); auto *advancedLayout = new QVBoxLayout(advanced); advancedLayout->setContentsMargins(0,0,0,0);
@@ -329,8 +418,11 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     });
     layout->addStretch();
     m_tabs->tabBar()->moveTab(3,1); m_tabs->tabBar()->moveTab(4,2);
-    m_editBar = new QWidget; auto *editLayout = new QHBoxLayout(m_editBar); editLayout->setContentsMargins(0,0,0,0);
-    m_changes = label(); m_discard = new QPushButton("Discard changes"); m_save = new QPushButton(m_demo ? "Review changes…" : "Save changes…"); m_save->setObjectName("saveSettings");
+    connect(navigation,&QListWidget::currentRowChanged,m_tabs,&QTabWidget::setCurrentIndex);
+    connect(m_tabs,&QTabWidget::currentChanged,this,[navigation,heading,this](int index) {navigation->setCurrentRow(index); heading->setText(m_tabs->tabText(index));});
+    navigation->setCurrentRow(0);
+    m_editBar = new QWidget; m_editBar->setObjectName("editBar"); auto *editLayout = new QHBoxLayout(m_editBar); editLayout->setContentsMargins(12,10,12,10);
+    m_changes = label(); m_discard = new QPushButton("Discard changes"); m_save = new QPushButton(m_demo ? "Review changes…" : "Save changes…"); m_save->setObjectName("saveSettings"); m_save->setProperty("primary",true);
     m_save->setEnabled(false); m_discard->setEnabled(false);
     editLayout->addWidget(m_changes,1); editLayout->addWidget(m_discard); editLayout->addWidget(m_save); outer->addWidget(m_editBar);
     connect(m_save,&QPushButton::clicked,this,&Window::saveSettings);
@@ -369,7 +461,7 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
             {"config",QJsonObject{{"mountpoint","/media/dist/43b29217-193a-4f61-99ff-01a137b0c8f2"},{"uuid","43b29217-193a-4f61-99ff-01a137b0c8f2"},{"hours",6},{"hourly",4},{"daily",7},{"weekly",4},{"monthly",6},{"include_system",true},{"package_recovery",true},{"excludes","# Caches and regenerable downloads\npp:home/dist/Downloads\npp:home/dist/.cache\nsh:home/dist/**/node_modules"}}},
             {"service",QJsonObject{{"ActiveState","failed"},{"Result","exit-code"},{"ExecMainExitTimestamp","Sun 2026-11-08 06:03:58 MST"}}},
             {"timer",QJsonObject{{"ActiveState","active"},{"NextElapseUSecRealtime","Sun 2026-11-08 12:03:44 MST"}}},
-            {"logs","2026-11-08T06:03:58 Backup failed: expected backup filesystem is not mounted.\n2026-11-08T06:03:58 local-system-backup.service: Failed with result 'exit-code'."}};
+            {"logs","2026-11-08T06:03:44-07:00 INFO · Scheduled backup started.\n2026-11-08T06:03:44-07:00 INFO · Checking source: /home/dist\n2026-11-08T06:03:45-07:00 INFO · Checking backup destination…\n2026-11-08T06:03:58-07:00 ERROR · Backup failed: expected backup filesystem is not mounted.\n2026-11-08T06:03:58-07:00 ERROR · local-system-backup.service: Failed with result 'exit-code'."}};
         loadSettings(); render(); setBusy(false); m_feedback->setText("Preview mode · Explore and review edits without changing your backups.");
         showArchives(QJsonArray{
             QJsonObject{{"name","home-2026-11-07T18:00:00"},{"time","2026-11-07T18:00:00"}},
@@ -486,16 +578,17 @@ void Window::render() {
         (s.value("Result") == "exit-code" && s.value("ExecMainCode").toString() == "1" && s.value("ExecMainStatus").toString() == "1"));
     const bool failed = outcome == "error" || (!reportedWarning && (active == "failed" || (!s.value("Result").toString().isEmpty() && s.value("Result") != "success")));
     QString title, explanation, state = "warning";
-    if (running) {title = "Backup is running"; explanation = "Follow the Activity tab for Borg output. Closing the monitor does not stop this backup."; state = "running";}
+    int statusPage = 1;
+    if (running) {title = "Backup is running"; explanation = "Follow the Activity tab for Borg output. Closing the monitor does not stop this backup."; state = "running"; statusPage = 4;}
     else if (!mounted) {
         title = "Backup destination needs attention";
         const auto mounts = m_snapshot.value("actual_mounts").toArray();
         explanation = mounts.isEmpty() ? "The expected backup filesystem is not mounted. Connect the drive before the next run." : "The backup drive is mounted at " + mounts[0].toString() + ", but the job checks a different path. Choose the detected location in Backup plan to correct it.";
         if (c.value("auto_mount").toBool()) explanation += " Automatic mounting will be attempted when the saved backup job starts.";
     } else if (!m_snapshot.value("source_ready").toBool(true)) {title = "Backup source is unavailable"; explanation = "Connect the source drive and check the selected folder. Automatic mounting can use existing filesystem entries when enabled.";}
-    else if (failed) {title = "Last backup attempt failed"; explanation = "Review the Borg errors and job output in Activity before retrying."; state = "error";}
-    else if (reportedWarning) {title = "Backup completed with warnings"; explanation = "Borg reported problems; some files may have been skipped or changed during the backup. Review the warnings in Activity.";}
-    else if (outcome == "skipped") {title = "Backup attempt was skipped"; explanation = "This attempt did not create a backup. Another job may have held the backup lock. Check Activity and the saved backups.";}
+    else if (failed) {title = "Last backup attempt failed"; explanation = "Review the Borg errors and job output in Activity before retrying."; state = "error"; statusPage = 4;}
+    else if (reportedWarning) {title = "Backup completed with warnings"; explanation = "Borg reported problems; some files may have been skipped or changed during the backup. Review the warnings in Activity."; statusPage = 4;}
+    else if (outcome == "skipped") {title = "Backup attempt was skipped"; explanation = "This attempt did not create a backup. Another job may have held the backup lock. Check Activity and the saved backups."; statusPage = 4;}
     else if (m_snapshot.contains("free") && m_snapshot.value("free").toDouble() <= c.value("reserve_gib").toInt(10)*1073741824.0) {title = "Backup drive is low on space"; explanation = "Available space is below the configured free-space threshold. Cleanup must reclaim enough space before a new archive can be written.";}
     else if (!enabled) {title = "Automatic backups are disabled"; explanation = "Enable the schedule to resume automatic backups.";}
     else if (s.value("ExecMainExitTimestamp").toString().isEmpty()) {title = "Waiting for the first backup result"; explanation = "The schedule is active. Read the archive catalog to inspect stored backups.";}
@@ -509,6 +602,12 @@ void Window::render() {
         }
     }
     m_status->setText(title); m_summary->setText(explanation);
+    auto *card = findChild<QFrame *>("statusCard"); card->setProperty("state",state); card->style()->unpolish(card); card->style()->polish(card);
+    auto *resolve = findChild<QPushButton *>("statusAction");
+    const bool showActivity = statusPage == 4;
+    resolve->setProperty("targetPage",statusPage);
+    resolve->setText(showActivity ? "Review activity →" : "Review backup plan →");
+    resolve->setVisible(state != "ok");
     m_destination->setText(c.value("repository").toString(c.value("mountpoint").toString())); m_destination->setToolTip("Filesystem UUID: " + c.value("uuid").toString());
     m_contents->setText(c.value("source").toString("/home/dist") + (c.value("include_system").toBool() ? " + system settings and local software" : "") + (c.value("package_recovery").toBool() ? " + software recovery list" : "") + " · Nested filesystems are skipped");
     m_storage->setText(QString("%1 · %2 · Leave %3 GiB free before starting").arg(c.value("scan_mode").toString() == "full_scan" ? "Full file scan" : "Incremental snapshots",c.value("compression").toString("zstd,3")).arg(c.value("reserve_gib").toInt(10)));
@@ -673,21 +772,77 @@ void Window::renderLog() {
     }
     const auto outcome = report.value("outcome").toString();
     if (issues.isEmpty() && (outcome == "warning" || outcome == "error")) issues << "The job reported a problem. Its detailed Borg messages are unavailable in the retained journal; review the job output below.";
-    if (m_snapshot.value("log_truncated").toBool()) issues << "Showing the latest 500 journal entries. Earlier messages may not be shown.";
     m_borgMessages->setVisible(!issues.isEmpty()); m_borgHeading->setVisible(!issues.isEmpty());
     const auto issueText = issues.join("\n\n");
     if (m_borgMessages->toPlainText() != issueText) m_borgMessages->setPlainText(issueText);
-    const QString filter = m_logSearch->text(); QStringList selected;
-    for (const auto &line : m_snapshot.value("logs").toString().split('\n'))
-        if (filter.isEmpty() || line.contains(filter,Qt::CaseInsensitive)) selected << line;
-    QString result = selected.join('\n');
+    auto entries = m_snapshot.value("activity").toArray();
+    // Older installed helpers return readable text only. Keep that output usable
+    // without inventing timestamps or severity for unstructured messages.
+    if (!m_snapshot.contains("activity")) {
+        static const QRegularExpression prefix("^(?:(\\d{4}-\\d{2}-\\d{2}T\\S+) )?(?:(DEBUG|INFO|WARNING|ERROR|CRITICAL) · )?(.*)$");
+        for (const auto &line : m_snapshot.value("logs").toString().split('\n')) {
+            if (line.isEmpty()) continue;
+            const auto match = prefix.match(line);
+            entries.append(QJsonObject{{"timestamp",match.captured(1)}, {"level",match.captured(2)},
+                {"source","Service"}, {"message",match.captured(3)}, {"raw",line}});
+        }
+    }
+    const auto filter = m_logSearch->text(); QJsonArray visible; QStringList selected;
+    for (const auto value : entries) {
+        const auto entry = value.toObject();
+        const auto level = entry.value("level").toString();
+        const auto timestamp = entry.value("timestamp").toString();
+        const auto time = QDateTime::fromString(timestamp,Qt::ISODate).toLocalTime();
+        const auto displayTime = time.isValid() ? time.toString("yyyy-MM-dd HH:mm:ss t") : timestamp;
+        const auto text = displayTime + " " + level + " · " + entry.value("source").toString() + ": " + entry.value("message").toString();
+        const bool problem = level == "WARNING" || level == "ERROR" || level == "CRITICAL";
+        if ((m_logLevel->currentIndex() == 0 || problem) && (filter.isEmpty() || text.contains(filter,Qt::CaseInsensitive))) {
+            visible.append(entry);
+            const auto raw = entry.value("raw").toString();
+            if (raw.isEmpty()) selected << text.trimmed();
+            else if (timestamp.isEmpty() || !m_snapshot.contains("activity")) selected << raw;
+            else selected << displayTime + " " + raw;
+        }
+    }
+    QString count = visible.isEmpty() ? (entries.isEmpty() ? "No backup activity available yet." : "No activity matches this filter.")
+        : QString("%1 of %2 entries").arg(visible.size()).arg(entries.size());
+    if (m_snapshot.value("log_truncated").toBool()) count += " · Latest 500 journal entries";
+    m_logCount->setText(count);
     const auto error = m_snapshot.value("log_error").toString();
-    if (!error.isEmpty()) result += "\nJournal access: " + error;
-    if (result.isEmpty()) result = filter.isEmpty() ? "No backup activity available yet." : "No activity matches this filter.";
-    if (m_logs->toPlainText() == result) return;
-    const auto position = m_logs->verticalScrollBar()->value();
-    m_logs->setPlainText(result);
-    m_logs->verticalScrollBar()->setValue(m_followLog->isChecked() ? m_logs->verticalScrollBar()->maximum() : position);
+    m_logAccess->setText(error.isEmpty() ? QString() : "Journal access: " + error); m_logAccess->setVisible(!error.isEmpty());
+    if (!error.isEmpty()) selected << "Journal access: " + error;
+    auto result = selected.join('\n');
+    if (result.isEmpty()) result = count;
+    if (m_logs->toPlainText() != result) {
+        const auto position = m_logs->verticalScrollBar()->value(); m_logs->setPlainText(result);
+        m_logs->verticalScrollBar()->setValue(m_followLog->isChecked() ? m_logs->verticalScrollBar()->maximum() : position);
+    }
+    const auto key = QJsonDocument(visible).toJson(QJsonDocument::Compact);
+    if (m_activity->property("entries").toByteArray() == key) return;
+    m_activity->setProperty("entries",key);
+    const auto position = m_activity->verticalScrollBar()->value();
+    m_activity->setRowCount(visible.size());
+    for (int row=0;row<visible.size();++row) {
+        const auto entry = visible[row].toObject();
+        const auto timestamp = entry.value("timestamp").toString();
+        const auto time = QDateTime::fromString(timestamp,Qt::ISODate).toLocalTime();
+        const auto level = entry.value("level").toString();
+        const auto levelText = level.isEmpty() ? QString("Output") : level.left(1) + level.mid(1).toLower();
+        const QStringList cells{time.isValid() ? time.toString("MMM d, yyyy\nHH:mm:ss") : timestamp.isEmpty() ? "—" : timestamp,
+            levelText, entry.value("source").toString(), entry.value("message").toString()};
+        for (int column=0;column<cells.size();++column) {
+            auto *item = new QTableWidgetItem(cells[column]); item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+            item->setToolTip(column == 0 && time.isValid() ? time.toString("yyyy-MM-dd HH:mm:ss t") : cells[column]);
+            if (column == 1 && (level == "WARNING" || level == "ERROR" || level == "CRITICAL")) {
+                item->setIcon(style()->standardIcon(level == "WARNING" ? QStyle::SP_MessageBoxWarning : QStyle::SP_MessageBoxCritical));
+                auto font = item->font(); font.setBold(true); item->setFont(font);
+            }
+            if (column == 3) item->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+            m_activity->setItem(row,column,item);
+        }
+    }
+    if (m_followLog->isChecked()) m_activity->scrollToBottom(); else m_activity->verticalScrollBar()->setValue(position);
+
 }
 
 void Window::showArchives(const QJsonArray &archives) {

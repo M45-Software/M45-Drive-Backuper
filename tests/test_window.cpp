@@ -14,10 +14,71 @@
 #include <QTreeWidget>
 #include <QTableWidget>
 #include <QLabel>
+#include <QListWidget>
+#include <QClipboard>
+#include <QStackedWidget>
 
 class WindowTests : public QObject {
     Q_OBJECT
 private slots:
+    void activityEventsFilterCopyAndPreserveLiteralMultilineOutput() {
+        Window window(true); window.Show(); window.selectPage(4);
+        const QString message = "<file>&.txt: Permission denied\nOriginal size:      12.4 GB\nDeduplicated size:   42.0 MB";
+        window.m_snapshot["activity"] = QJsonArray{
+            QJsonObject{{"timestamp","2026-11-08T13:03:44Z"},{"level","INFO"},{"source","Borg create"},{"message","Started"}},
+            QJsonObject{{"timestamp","2026-11-08T13:03:58Z"},{"level","WARNING"},{"source","Borg create"},{"message",message}},
+            QJsonObject{{"timestamp",""},{"level","ERROR"},{"source","Service"},{"message","Failed"}}};
+        window.m_snapshot["log_error"] = "Permission denied";
+        window.m_snapshot["log_truncated"] = true;
+        window.renderLog();
+        QCOMPARE(window.m_activity->rowCount(),3);
+        QCOMPARE(window.m_activity->item(1,3)->text(),message);
+        QVERIFY(window.m_activity->item(0,0)->text().contains("2026"));
+        QCOMPARE(window.m_activity->item(2,0)->text(),QString("—"));
+        window.m_logLevel->setCurrentIndex(1);
+        QCOMPARE(window.m_activity->rowCount(),2);
+        window.m_logSearch->setText("<file>&");
+        QCOMPARE(window.m_activity->rowCount(),1);
+        window.findChild<QPushButton *>("copyActivity")->click();
+        QVERIFY(QApplication::clipboard()->text().contains(message));
+        QVERIFY(!QApplication::clipboard()->text().contains("Started"));
+        window.findChild<QCheckBox *>("rawActivity")->setChecked(true);
+        QVERIFY(window.m_logs->isVisible()); QVERIFY(!window.m_activity->isVisible());
+        window.m_logSearch->setText("no-match");
+        QCOMPARE(window.m_activity->rowCount(),0);
+        QVERIFY(window.m_logCount->text().contains("No activity matches"));
+        QVERIFY(window.m_logCount->text().contains("500"));
+        QVERIFY(window.m_logAccess->isVisible());
+        QVERIFY(window.m_logs->toPlainText().contains("Journal access: Permission denied"));
+    }
+    void sidebarPreservesEditsAndStatusActionsFollowVisibleProblem() {
+        Window window(true); window.Show();
+        auto *navigation = window.findChild<QListWidget *>("navigation");
+        QVERIFY(navigation);
+        navigation->setCurrentRow(1);
+        QCOMPARE(window.m_tabs->currentIndex(),1);
+        window.m_source->setText("/home/example/Documents");
+        QVERIFY(window.m_save->isEnabled());
+        navigation->setFocus();
+        QTest::keyClick(navigation,Qt::Key_Down);
+        QCOMPARE(window.m_tabs->currentIndex(),2);
+        QVERIFY(window.m_editBar->isVisible());
+        window.selectPage(0);
+        QCOMPARE(navigation->currentRow(),0);
+        QVERIFY(window.m_editBar->isVisible());
+        QCOMPARE(window.m_source->text(),QString("/home/example/Documents"));
+
+        // Resolve the visible destination problem even if the last run also failed.
+        auto *resolve = window.findChild<QPushButton *>("statusAction");
+        QVERIFY(resolve->text().contains("plan"));
+        resolve->click(); QCOMPARE(window.m_tabs->currentIndex(),1);
+        auto snapshot = window.m_snapshot; snapshot["mounted"] = true;
+        window.m_snapshot = snapshot; window.render(); window.selectPage(0);
+        QVERIFY(resolve->text().contains("activity"));
+        resolve->click(); QCOMPARE(window.m_tabs->currentIndex(),4);
+        QCOMPARE(navigation->currentRow(),4);
+        QCOMPARE(window.m_source->text(),QString("/home/example/Documents"));
+    }
     void borgDiagnosticsReachOverviewActivityAndNotifications() {
         Window window(true); window.Show(); window.m_notifications->setChecked(true);
         QSignalSpy notifications(&window,&Window::attentionRequested);

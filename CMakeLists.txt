@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(M45DriveBackuper VERSION 0.3.2 LANGUAGES CXX)
+project(M45DriveBackuper VERSION 0.3.4 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -18,6 +18,10 @@ install(FILES packaging/m45-drive-backuper-autostart.desktop DESTINATION /etc/xd
 install(FILES packaging/m45-drive-backuper.svg DESTINATION share/icons/hicolor/scalable/apps)
 install(FILES packaging/io.github.m45drivebackuper.policy DESTINATION share/polkit-1/actions)
 install(FILES README.md LICENSE DESTINATION share/doc/m45-drive-backuper)
+# Documentation captures are opt-in and never installed with the application.
+add_executable(capture-screenshots EXCLUDE_FROM_ALL tools/capture-screenshots.cpp src/window.cpp src/exclusions.cpp)
+target_include_directories(capture-screenshots PRIVATE src)
+target_link_libraries(capture-screenshots PRIVATE Qt6::Widgets Qt6::DBus)
 include(CTest)
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)

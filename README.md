@@ -2,10 +2,50 @@
 
 A native Qt 6 KDE Plasma tray app for configuring and monitoring this machine's existing Borg backup job. Based on the DriveWatch project's native Qt window/tray structure, palette-aware presentation, single-instance D-Bus integration, XDG launcher/autostart, CMake build and Debian packaging. DriveWatch remains unchanged; its MIT attribution is retained in LICENSE.
 
+## Screenshots
+
+These are captures of the actual Qt app using synthetic demo data. The destination warning demonstrates a moved backup drive, rather than the state of a real machine. Click any image to view it at full resolution.
+
+### Everything important, at a glance
+
+Current status and its next action come first, followed by the next scheduled run, last attempt, and saved backup plan.
+
+[![Overview with a destination warning, next scheduled run, last attempt, and backup plan](docs/screenshots/overview.png)](docs/screenshots/overview.png)
+
+| Build your backup plan | Choose what to skip |
+| :--- | :--- |
+| [![Backup plan with separate source, destination, and schedule sections](docs/screenshots/settings.png)](docs/screenshots/settings.png) | [![Skip files with searchable exclusion rules and file and folder pickers](docs/screenshots/exclusions.png)](docs/screenshots/exclusions.png) |
+| Choose your source, destination, and schedule. Advanced options stay tucked away, and edits are reviewed before saving. | Search exclusions, skip files or folders, and include selected items again. Original files stay on disk. |
+
+### Activity you can actually read
+
+Local timestamps, severity icons, source labels, and wrapped messages make each event easier to follow. Search, filter warnings and errors, or switch to plain text for troubleshooting.
+
+[![Activity showing timestamped events, severity icons, search, and a warnings and errors filter](docs/screenshots/activity.png)](docs/screenshots/activity.png)
+
+| Browse saved backups | Desktop and recovery preferences |
+| :--- | :--- |
+| [![Saved backups catalog showing snapshot dates, names, and checkpoint status](docs/screenshots/backups.png)](docs/screenshots/backups.png) | [![Preferences with tray monitoring options and software recovery controls](docs/screenshots/preferences.png)](docs/screenshots/preferences.png) |
+| Inspect stored snapshots and distinguish checkpoints that may be incomplete. Listing snapshots does not verify their integrity. | Set login and notification preferences, manage package recovery, or export an extra recovery copy. |
+
+<details>
+<summary><strong>See the dark theme</strong></summary>
+
+The app follows the desktop palette. These captures show the same sample data with a dark palette.
+
+[![Overview in a dark desktop palette](docs/screenshots/overview-dark.png)](docs/screenshots/overview-dark.png)
+
+[![Activity event view in a dark desktop palette](docs/screenshots/activity-dark.png)](docs/screenshots/activity-dark.png)
+
+</details>
+
 ## Features
 
 - System tray status, click-to-open menu, backup shortcut, settings and journal.
-- Overview shows the service result, next scheduled run, destination UUID and available space.
+- Persistent sidebar navigation keeps Overview, Backup plan, Skip files, Saved backups, Activity and Preferences in a stable order.
+- Overview separates the current status and its next action from schedule, last-attempt and backup-plan details.
+- Backup plan groups source, destination and schedule into three sections, with advanced options collapsed and a persistent edit/review bar.
+- Native Qt controls and desktop palette colors support light and dark themes.
 - Detects the existing backup filesystem at a different mount path. The user can choose its detected path and review the change before saving.
 - Simple setup: choose what to back up, **A folder** or **This drive** as destination, and a schedule. Detailed options stay collapsed.
 - The folder chooser supports **New Folder**, and you can type a new folder path. Drive selection shows the exact backup folder. Switching choices keeps your folder entry; drive lists refresh with status without replacing your edits.
@@ -14,7 +54,8 @@ A native Qt 6 KDE Plasma tray app for configuring and monitoring this machine's 
 - Direct **Open K4DirStat** shortcut for finding large folders in the selected source, with installation instructions if unavailable.
 - Backup mode, compression, storage limits, mounting and retention stay under Advanced. **Use recommended settings** chooses incremental snapshots, balanced compression, a 10 GiB preflight reserve, automatic mounting, system settings, software recovery lists, cache skipping and 4 hourly / 7 daily / 4 weekly / 6 monthly retention. Existing storage quotas and exclusions are preserved.
 - Unsaved-change tracking, discard and review controls, and a quit warning protect unfinished edits.
-- A sortable saved-backup catalog, checkpoint labels, searchable activity, and desktop preferences.
+- A sortable saved-backup catalog, checkpoint labels, and desktop preferences.
+- Activity events with local timestamps, severity icons, source labels and wrapped messages. Search and a warnings/errors filter work across both the event table and a monospace plain-text view. Copy visible log preserves multiline output; journal access and truncation notices remain visible.
 - Start a backup, enable/disable its existing timer, and read the repository archive catalog.
 - Login startup toggle, attention notifications and Qt desktop colors.
 - Read-only monitoring uses the desktop user's journal permissions. Administrative actions use `pkexec` with a root-owned fixed-purpose helper; the GUI never runs as root.
@@ -43,7 +84,7 @@ The tray shows running, completed, warning and error states. **Backup completed 
 
 For an existing job, **Enable Borg warning and error reporting…** on Overview updates the saved script after authentication, preserving the selected plan. Saving any backup-plan change also installs reporting. The job uses Borg's `--log-json`, keeps warning exit status 1 and error statuses, and records a final result in the journal. Maintenance warnings allow archive creation to continue, then remain visible in the final result. Preflight failures and skipped/locked attempts are distinguished from completed backups. An existing systemd `OnFailure` alert also runs when the job exits with warnings; the app distinguishes that warning result from a fatal error. No service failure policy is changed.
 
-Diagnostics are read only from the service's current invocation, so an earlier warning cannot contaminate a later success. The Activity view retains up to 500 journal entries and labels truncation. Journal permissions/retention may limit detailed messages; the app does not claim that unavailable diagnostics prove a warning-free backup.
+Diagnostics are read only from the service's current invocation, so an earlier warning cannot contaminate a later success. The Activity view retains up to 500 journal entries and labels truncation. It preserves journal timestamps and shows them in your local timezone. Unknown timestamps are shown as a dash; plain output without an explicit severity is not guessed to be an error. The event table and plain-text view share search and severity filters; access errors remain visible even when no events match. Journal permissions/retention may limit detailed messages; the app does not claim that unavailable diagnostics prove a warning-free backup.
 
 ## Choosing what to skip
 
@@ -55,9 +96,6 @@ Diagnostics are read only from the service's current invocation, so an earlier w
 
 Excluding something affects future backups and does not delete the original. Removing a rule with **Include selected again** does not override other matching rules. Old snapshots retain their contents until retention removes them. A changed source can leave exclusions outside the selected source; those paths are labelled and retained. Custom rules and comments are preserved when using the pickers. Source paths through symlinks must be replaced by their resolved path so exclusion matching stays consistent.
 
-![Skip files](docs/screenshots/exclusions.png)
-![Backup plan](docs/screenshots/settings.png)
-
 ## Build, test and install
 
 Requires CMake, C++17, Qt 6 Widgets/DBus development packages, Python 3, Borg 1.2, systemd and PolicyKit. Python tests use the distribution Python because it supplies Borg's pattern parser.
@@ -67,19 +105,26 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 (cd build && cpack -G DEB)
-sudo apt install ./build/m45-drive-backuper_0.3.2_amd64.deb
+sudo apt install ./build/m45-drive-backuper_0.3.4_amd64.deb
 m45-drive-backuper --show
 ```
 
 The package adds an Applications menu entry and login autostart. No root background collector is needed: the app reads status asynchronously every 15 seconds. Install the package to use real monitoring/actions; the helper has a fixed installed path. Members of `adm` or `systemd-journal` can read the service journal. If journal access is restricted, the app reports that limitation; status is still available. Quitting the tray monitor does not affect system backups. Existing system failure notifications remain in place.
 
 ```sh
-QT_QPA_PLATFORM=offscreen ./build/m45-drive-backuper --demo --screenshot docs/screenshots/overview.png
-QT_QPA_PLATFORM=offscreen ./build/m45-drive-backuper --demo --page settings --screenshot docs/screenshots/settings.png
-QT_QPA_PLATFORM=offscreen ./build/m45-drive-backuper --demo --page exclusions --screenshot docs/screenshots/exclusions.png
+QT_QPA_PLATFORM=offscreen ./build/m45-drive-backuper --demo --page journal --screenshot build/activity-preview.png
 ```
 
 Demo mode uses synthetic data. You can edit a plan, choose exclusions and review the result; it never invokes the helper, opens K4DirStat, saves preferences, registers the real D-Bus name, or sends notifications. Screenshot timestamps illustrate the sample failure rather than the current state of a machine.
+
+### Refreshing the README screenshots
+
+The opt-in capture target renders all six pages plus dark Overview and Activity variants with a consistent Fusion style, Noto Sans font, local timezone, and 1200 × 960 logical window size. Use Noto Sans and your platform's normal monospace font for consistent typography. A scale factor of 2 produces sharp 2400 × 1920 PNGs for full-size viewing. The capture tool always uses demo mode and is not included in the installed app.
+
+```sh
+cmake --build build --target capture-screenshots --parallel
+QT_QPA_PLATFORM=offscreen QT_SCALE_FACTOR=2 TZ=America/Denver ./build/capture-screenshots docs/screenshots
+```
 
 ## Isolated backup test harness
 
