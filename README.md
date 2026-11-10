@@ -133,6 +133,14 @@ Demo mode uses synthetic data. You can edit a plan, choose exclusions and review
 
 GitHub Actions builds and tests each push and pull request and uploads the `.deb` as an artifact. A release commit on `main` whose message starts with `Release v` publishes a preview release with matching `docs/releases/vVERSION.md` notes and `SHA256SUMS`, then deploys that exact tested package to the signed APT repository. Manually published releases with matching assets also deploy; drafts do not. See [APT repository operations](docs/apt-repository.md) for the restricted receiver, dedicated deployment credential, immutable package versions, and backup coverage.
 
+CI caches the downloaded Ubuntu packages listed in `.github/ci/apt-packages.txt`
+and installs them without optional recommendations. APT still updates indexes,
+resolves dependencies, and verifies packages. Daily cache keys include the runner
+image, architecture, and dependency manifest; older matching caches seed new
+keys. The first run fills the cache. C++ compilation uses a separate 250 MB
+`ccache`, with hit/miss statistics in the build log. CMake configuration, tests,
+and Debian packaging run normally. APT publication needs no development tools.
+
 ### Refreshing the README screenshots
 
 The opt-in capture target renders all six pages with a consistent dark palette, Fusion style, Noto Sans font, local timezone, and 1200 × 960 logical window size. Use Noto Sans and your platform's normal monospace font for consistent typography. A scale factor of 2 produces sharp 2400 × 1920 PNGs for full-size viewing. The capture tool always uses demo mode and is not included in the installed app.
