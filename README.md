@@ -1,5 +1,7 @@
 # M45 Drive Backuper
 
+Licensed under the [MIT License](LICENSE).
+
 A native Qt 6 KDE Plasma tray app for configuring and monitoring this machine's existing Borg backup job. Based on the DriveWatch project's native Qt window/tray structure, palette-aware presentation, single-instance D-Bus integration, XDG launcher/autostart, CMake build and Debian packaging. DriveWatch remains unchanged; its MIT attribution is retained in LICENSE.
 
 ## Screenshots
