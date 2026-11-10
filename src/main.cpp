@@ -3,6 +3,7 @@
 #include <QCommandLineParser>
 #include <QDBusConnection>
 #include <QDBusInterface>
+#include <QSettings>
 #include <QTimer>
 
 int main(int argc, char **argv) {
@@ -15,6 +16,7 @@ int main(int argc, char **argv) {
     QCommandLineParser args;
     args.setApplicationDescription("Borg backup settings and monitoring for KDE Plasma");
     args.addHelpOption(); args.addVersionOption();
+    args.addOption({"autostart", "Start at login; stay in the tray unless Open window at login is enabled."});
     args.addOption({"show", "Open the backup overview."});
     args.addOption({"demo", "Preview synthetic data without changing the machine."});
     args.addOption({"page", "Open overview, settings, exclusions, archives, journal or preferences.", "page", "overview"});
@@ -23,18 +25,21 @@ int main(int argc, char **argv) {
     if (args.isSet("screenshot") && !args.isSet("demo")) args.showHelp(2);
     int page = QStringList{"overview", "settings", "exclusions", "archives", "journal", "preferences"}.indexOf(args.value("page"));
     if (page < 0) args.showHelp(2);
+    const bool loginWindow = args.isSet("autostart") && QSettings("M45 Drive Backuper", "M45 Drive Backuper").value("showWindowAtLogin", false).toBool();
+    const bool quietLogin = args.isSet("autostart") && !loginWindow && !args.isSet("show");
     auto bus = QDBusConnection::sessionBus();
     if (!args.isSet("demo")) {
         if (!bus.isConnected()) qFatal("A desktop D-Bus session is required.");
         if (!bus.registerService("io.github.m45drivebackuper")) {
             QDBusInterface existing("io.github.m45drivebackuper", "/M45DriveBackuper", "io.github.m45drivebackuper", bus);
-            existing.call("Show"); return 0;
+            if (!quietLogin) existing.call("Show");
+            return 0;
         }
     }
     Window window(args.isSet("demo"));
     if (!args.isSet("demo")) bus.registerObject("/M45DriveBackuper", &window, QDBusConnection::ExportAllSlots);
     window.selectPage(page);
-    if (args.isSet("show") || args.isSet("demo") || !QSystemTrayIcon::isSystemTrayAvailable()) window.Show();
+    if (!quietLogin && (loginWindow || args.isSet("show") || args.isSet("demo") || !QSystemTrayIcon::isSystemTrayAvailable())) window.Show();
     if (args.isSet("screenshot")) QTimer::singleShot(500, &app, [&] {
         app.exit(window.grab().save(args.value("screenshot")) ? 0 : 1);
     });

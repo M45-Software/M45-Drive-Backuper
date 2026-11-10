@@ -23,6 +23,46 @@
 class WindowTests : public QObject {
     Q_OBJECT
 private slots:
+    void missingHistoryIsNeutralWhileRestoredResultsKeepTheirOutcome() {
+        Window window(true);
+        auto snapshot = window.m_snapshot;
+        snapshot["mounted"] = true;
+        snapshot["source_ready"] = true;
+        snapshot["timer"] = QJsonObject{{"ActiveState", "active"}};
+        snapshot["service"] = QJsonObject{{"ActiveState", "inactive"}, {"Result", "success"}};
+        snapshot["borg_report"] = QJsonObject{{"outcome", "unknown"}};
+        window.m_snapshot = snapshot;
+        window.render();
+        QCOMPARE(window.m_status->text(), QString("Waiting for a backup result"));
+        QVERIFY(window.m_lastNotification.isEmpty());
+        auto service = snapshot["service"].toObject();
+        service["ExecMainExitTimestamp"] = "Mon 2026-11-09 17:00:00 MST";
+        snapshot["service"] = service;
+        snapshot["borg_report"] = QJsonObject{{"outcome", "success"}};
+        snapshot["previous_attempt"] = true;
+        window.m_snapshot = snapshot;
+        window.render();
+        QCOMPARE(window.m_status->text(), QString("Last backup attempt completed"));
+    }
+    void loginWindowPreferenceDefaultsToTrayAndPersists() {
+        QSettings settings("M45 Drive Backuper", "M45 Drive Backuper");
+        settings.remove("showWindowAtLogin"); settings.sync();
+        {
+            Window window(true); window.m_demo = false;
+            auto *checkbox = window.findChild<QCheckBox *>("showWindowAtLogin");
+            QVERIFY(checkbox); QVERIFY(!checkbox->isChecked());
+            checkbox->setChecked(true);
+            QCOMPARE(settings.value("showWindowAtLogin").toBool(), true);
+        }
+        {
+            Window window(true); window.m_demo = false;
+            auto *checkbox = window.findChild<QCheckBox *>("showWindowAtLogin");
+            QVERIFY(checkbox->isChecked());
+            checkbox->setChecked(false);
+        }
+        QCOMPARE(settings.value("showWindowAtLogin").toBool(), false);
+    }
+
     void desktopPaletteChangesRefreshExistingWidgets() {
         struct PaletteReset {
             QPalette palette = qApp->palette();

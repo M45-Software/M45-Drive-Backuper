@@ -123,6 +123,45 @@ def prepare_mounts():
     return dict(message='Configured backup drives are mounted and their UUIDs are verified.')
 
 
+def retain_last_attempt(snapshot):
+    """Keep observed completed attempts across systemd's reboot-time reset."""
+    config, service = snapshot['config'], snapshot['service']
+    identity = {key: config.get(key, '') for key in ('uuid', 'repository', 'source')}
+    path = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'm45-drive-backuper/last-attempt.json'
+    # A new invocation, including one without a result yet, must never inherit
+    # diagnostics from the previous attempt.
+    if service.get('ActiveState') in ('active', 'activating', 'deactivating'):
+        return
+    fields = ('service', 'borg_report', 'logs', 'activity', 'log_truncated')
+    try:
+        if service.get('ExecMainExitTimestamp') and service.get('Result'):
+            saved = dict(version=1, identity=identity,
+                         attempt={key: snapshot[key] for key in fields})
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as output:
+                    temporary = Path(output.name)
+                    json.dump(saved, output)
+                temporary.replace(path)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+        elif not service.get('ExecMainStartTimestamp') and not service.get('InvocationID') and service.get('ActiveState') != 'failed':
+            saved = json.loads(path.read_text())
+            if saved.get('version') == 1 and saved.get('identity') == identity:
+                attempt = saved['attempt']
+                if (all(key in attempt for key in fields)
+                        and attempt['service'].get('ExecMainExitTimestamp')
+                        and attempt['service'].get('Result')):
+                    snapshot.update(attempt)
+                    snapshot['previous_attempt'] = True
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        # Missing history or an unwritable state directory must not break live
+        # monitoring or turn an unknown result into a successful one.
+        pass
+
+
 def status():
     config = read_config()
     service, timer = properties(SERVICE), properties(TIMER)
@@ -150,6 +189,7 @@ def status():
     result['activity'] = activity
     result['log_truncated'] = len(logs.stdout.splitlines()) >= 500
     result['log_error'] = logs.stderr.strip() if logs.returncode or not logs.stdout.strip() else ''
+    retain_last_attempt(result)
     return result
 
 

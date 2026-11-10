@@ -126,10 +126,11 @@ QIcon statusIcon(const QString &state) {
     p.setPen(Qt::NoPen); p.setBrush(QColor("#4679ad")); p.drawRoundedRect(7, 8, 46, 49, 7, 7);
     p.setPen(QPen(Qt::white, 4)); p.drawLine(17, 21, 43, 21); p.drawLine(17, 30, 35, 30);
     p.setPen(QPen(qApp->palette().color(QPalette::Window), 3));
-    p.setBrush(state == "running" ? QColor("#5ea9ec") : state == "ok" ? QColor("#54b992") : state == "error" ? QColor("#ef716c") : QColor("#efb14f"));
+    p.setBrush(state == "idle" ? QColor("#aab6c2") : state == "running" ? QColor("#5ea9ec") : state == "ok" ? QColor("#54b992") : state == "error" ? QColor("#ef716c") : QColor("#efb14f"));
     p.drawEllipse(35, 35, 25, 25);
     p.setPen(QPen(QColor("#172731"), 3));
     if (state == "ok") {p.drawLine(41, 47, 46, 52); p.drawLine(46, 52, 54, 42);}
+    else if (state == "idle") {p.drawLine(42, 47, 54, 47);}
     else if (state == "running") {p.drawLine(48, 40, 48, 48); p.drawLine(48, 48, 53, 48);}
     else {p.drawLine(48, 40, 48, 49); p.drawPoint(48, 54);}
     return QIcon(pix);
@@ -436,6 +437,13 @@ Window::Window(bool demo) : m_demo(demo), m_settings("M45 Drive Backuper", "M45 
     bool startup = true; QFile startupFile(startupPath()); if (startupFile.open(QIODevice::ReadOnly)) startup = !startupFile.readAll().contains("Hidden=true");
     m_startup->setChecked(startup); m_notifications->setChecked(m_settings.value("notifications",true).toBool());
     layout->addWidget(m_startup); layout->addWidget(m_notifications);
+    auto *loginWindow = new PaletteCheckBox("Open window at login");
+    loginWindow->setObjectName("showWindowAtLogin");
+    loginWindow->setChecked(m_settings.value("showWindowAtLogin", false).toBool());
+    loginWindow->setEnabled(!m_demo && startup);
+    layout->addWidget(loginWindow);
+    connect(m_startup, &QCheckBox::toggled, loginWindow, [this, loginWindow](bool on) { loginWindow->setEnabled(!m_demo && on); });
+    connect(loginWindow, &QCheckBox::toggled, this, [this](bool on) { if (!m_demo) m_settings.setValue("showWindowAtLogin", on); });
     connect(m_startup,&QCheckBox::toggled,this,&Window::setStartup);
     connect(m_notifications,&QCheckBox::toggled,this,[this](bool on) {if (!m_demo) m_settings.setValue("notifications",on);});
     auto *recoveryBox = new QGroupBox("Software recovery"); auto *recoveryLayout = new QVBoxLayout(recoveryBox);
@@ -646,7 +654,7 @@ void Window::render() {
     else if (outcome == "skipped") {title = "Backup attempt was skipped"; explanation = "This attempt did not create a backup. Another job may have held the backup lock. Check Activity and the saved backups."; statusPage = 4;}
     else if (m_snapshot.contains("free") && m_snapshot.value("free").toDouble() <= c.value("reserve_gib").toInt(10)*1073741824.0) {title = "Backup drive is low on space"; explanation = "Available space is below the configured free-space threshold. Cleanup must reclaim enough space before a new archive can be written.";}
     else if (!enabled) {title = "Automatic backups are disabled"; explanation = "Enable the schedule to resume automatic backups.";}
-    else if (s.value("ExecMainExitTimestamp").toString().isEmpty()) {title = "Waiting for the first backup result"; explanation = "The schedule is active. Read the archive catalog to inspect stored backups.";}
+    else if (s.value("ExecMainExitTimestamp").toString().isEmpty()) {title = "Waiting for a backup result"; explanation = "The schedule is active. No previous attempt details are available. Read the archive catalog to inspect stored backups."; state = "idle";}
     else {title = "Last backup attempt completed"; explanation = outcome == "success" ? "Borg completed without warnings. Read the archive catalog to inspect stored backups." : "The service completed successfully. Detailed Borg results are unavailable for this attempt; inspect Activity and the saved backups."; state = "ok";}
     if (!running && (reportedWarning || failed)) {
         const auto issues = borg.value("issues").toArray();
@@ -781,7 +789,7 @@ void Window::saveSettings() {
 void Window::setStartup(bool enabled) {
     if (m_demo) return;
     const auto path = startupPath(); QDir().mkpath(QFileInfo(path).absolutePath()); QSaveFile file(path);
-    const QByteArray text = QByteArray("[Desktop Entry]\nType=Application\nName=M45 Drive Backuper\nExec=/usr/bin/m45-drive-backuper\nIcon=m45-drive-backuper\nTerminal=false\nHidden=") + (enabled ? "false\n" : "true\n");
+    const QByteArray text = QByteArray("[Desktop Entry]\nType=Application\nName=M45 Drive Backuper\nExec=/usr/bin/m45-drive-backuper --autostart\nIcon=m45-drive-backuper\nTerminal=false\nHidden=") + (enabled ? "false\n" : "true\n");
     if (!file.open(QIODevice::WriteOnly) || file.write(text) != text.size() || !file.commit()) {
         m_startup->blockSignals(true); m_startup->setChecked(!enabled); m_startup->blockSignals(false);
         QMessageBox::warning(this,"Login startup","Could not save the autostart setting.");

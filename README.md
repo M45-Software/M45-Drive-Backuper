@@ -177,3 +177,7 @@ Retention settings can delete old archives on a future backup. Copies of old set
 Remove with `sudo apt remove m45-drive-backuper`, then quit the tray monitor. This preserves the existing backup system and per-user startup/preferences.
 
 Implementation references: [Qt system tray](https://doc.qt.io/qt-6/qsystemtrayicon.html), [Borg archive listing](https://borgbackup.readthedocs.io/en/1.2.8/usage/list.html).
+
+Login startup uses `--autostart` and stays in the tray by default. Enable **Open window at login** in Preferences to show the window automatically. Applications-menu launches open the window; a repeated login launch does not raise an existing window unless requested.
+
+The monitor saves observed completed attempts and their diagnostics in `$XDG_STATE_HOME/m45-drive-backuper/last-attempt.json` (normally `~/.local/state/`). After reboot, those details remain visible until a new attempt starts. History is specific to the source and backup repository. Missing history is a neutral waiting state, not a backup failure.
