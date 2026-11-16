@@ -75,11 +75,14 @@ class VerificationTests(unittest.TestCase):
             self.assertEqual(verification.settings()['mode'], mode)
             units=self.root/'units'; units.mkdir(exist_ok=True)
             packaging=Path(__file__).resolve().parents[1]/'packaging'
+            backend=units/'backend'
+            backend.write_text((packaging.parent/'backend/m45-drive-backuper.py').read_text())
+            backend.chmod(0o755)
             for name in ('m45-backup-check.service','m45-backup-check.timer'):
                 content=(packaging/name).read_text()
                 # Validate unit semantics without requiring this app to be
                 # installed on the test/CI host. No service is started.
-                content=content.replace('/usr/libexec/m45-drive-backuper/backend verification-run','/usr/bin/true')
+                content=content.replace('/usr/libexec/m45-drive-backuper/backend',str(backend))
                 (units/name).write_text(content)
             dropin=units/'m45-backup-check.timer.d'; dropin.mkdir(exist_ok=True)
             (dropin/'schedule.conf').write_text(verification.TIMER_DROPIN.read_text())
