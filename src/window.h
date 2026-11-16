@@ -4,6 +4,8 @@
 #include <QSystemTrayIcon>
 #include <QSettings>
 
+class QTimer;
+class QDateTime;
 class QLabel;
 class QTabWidget;
 class QStackedWidget;
@@ -28,6 +30,7 @@ public:
 public slots:
     void Show();
 signals:
+    void reminderRequested(const QString &title, const QString &message, int page);
     void attentionRequested(const QString &title, const QString &message, bool critical);
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -40,9 +43,32 @@ private:
     QString m_revision, m_folderSource, m_folderRepository;
     QSettings m_settings;
     QString m_lastNotification;
+    int m_notificationPage = 0;
+    QComboBox *m_backupReminder, *m_checkReminder;
+    QCheckBox *m_idleBackup, *m_idleCheck;
+    QComboBox *m_idleMax;
+    QLabel *m_idleStatus;
+    QPushButton *m_idleSave;
+    bool m_idleLoaded = false;
+    QJsonObject m_idleSaved;
+    QString m_idleRevision;
+    void renderIdlePolicy();
+    QJsonObject idleConfiguration() const;
+    QLabel *m_reminderStatus;
+    void updateReminders(const QDateTime &now);
+    QString reminderKey(const QString &kind) const;
+    QTimer *m_trayAnimation;
+    QString m_trayState;
+    int m_trayFrame = 0;
     QSystemTrayIcon m_tray;
     QMenu *m_menu;
-    QAction *m_miniState, *m_miniNext, *m_runAction, *m_mountAction;
+    QMenu *m_backupControls, *m_checkControls;
+    QPushButton *m_pauseBackup, *m_cancelBackup, *m_pauseCheck;
+    QLabel *m_backupControlStatus, *m_checkControlStatus;
+    QMenu *createJobControls(const QString &kind);
+    void updateJobControls();
+    void jobControl(const QString &kind, const QString &operation, int delay = 0);
+    QAction *m_miniState, *m_runAction;
     QTabWidget *m_tabs;
     QLabel *m_status, *m_summary, *m_destination, *m_schedule, *m_attempt, *m_space, *m_feedback, *m_contents, *m_storage;
     QPlainTextEdit *m_logs;
@@ -79,6 +105,13 @@ private:
     void updateEditState();
     void updateRecoveryStatus();
     void renderLog();
+    void renderVerification();
+    bool m_verificationLoaded = false;
+    QString m_verificationRevision, m_verificationSavedMode, m_verificationSavedScope;
+    QComboBox *m_verificationMode, *m_verificationScope;
+    QLabel *m_verificationStatus;
+    QPushButton *m_checkNow, *m_saveVerification, *m_checkDetails, *m_stopCheck, *m_checkSelected, *m_browseBackup;
+    void startVerification(const QString &scope, const QString &archiveId = {});
     void showArchives(const QJsonArray &archives);
     void openAnalyzer();
     void quitMonitor();

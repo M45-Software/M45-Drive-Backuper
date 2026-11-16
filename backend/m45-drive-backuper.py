@@ -16,6 +16,10 @@ import tempfile
 import time
 import recovery
 import reporting
+import verification
+import file_recovery
+import job_control
+import idle_policy
 
 SCRIPT = Path('/usr/local/sbin/local-system-backup')
 EXCLUDES = Path('/etc/local-system-backup.exclude')
@@ -189,6 +193,10 @@ def status():
     result['activity'] = activity
     result['log_truncated'] = len(logs.stdout.splitlines()) >= 500
     result['log_error'] = logs.stderr.strip() if logs.returncode or not logs.stdout.strip() else ''
+    result['verification'] = verification.status(config, properties)
+    result['file_recovery'] = file_recovery.status(config)
+    result['job_control'] = job_control.status()
+    result['idle_policy'] = idle_policy.status(run)
     retain_last_attempt(result)
     return result
 
@@ -439,20 +447,46 @@ def archives():
 
 def main():
     args = sys.argv[1:]
+    if len(args) == 2 and args[0] == 'recovery-extract' and len(args[1]) <= 16384:
+        return file_recovery.extract_main(json.loads(base64.b64decode(args[1], validate=True)))
     if args == ['status']:
         return status()
     if args in (['recovery-export'], ['packages-preview']):
         if args[0] == 'recovery-export':
             return dict(manifest=recovery.inventory(read_config()['source']))
         return recovery.restore(read_manifest())
-    if not args or args[0] not in ('apply', 'start', 'enable', 'disable', 'archives', 'mount', 'recovery-refresh', 'packages-install', 'upgrade-reporting'):
+    if not args or args[0] not in ('apply', 'start', 'enable', 'disable', 'archives', 'mount', 'recovery-refresh', 'packages-install', 'upgrade-reporting', 'verification-start', 'verification-configure', 'verification-after-backup', 'verification-run', 'verification-stop', 'recovery-session', 'job-control', 'job-tick', 'job-allowed', 'idle-configure'):
         raise ValueError('Unsupported action.')
     if os.geteuid() != 0:
         raise PermissionError('This action requires administrator authentication.')
+    if args[0] == 'idle-configure' and len(args) == 2 and len(args[1]) <= 4096:
+        return idle_policy.configure(sys.modules[__name__], json.loads(base64.b64decode(args[1], validate=True)))
+    if args[0] == 'job-control' and len(args) == 2 and len(args[1]) <= 4096:
+        return job_control.control(sys.modules[__name__], json.loads(base64.b64decode(args[1], validate=True)))
+    if args[0] == 'job-allowed' and len(args) == 2:
+        return dict(_exit_code=0 if job_control.gate(sys.modules[__name__],args[1]) else 1)
+    if args == ['job-tick']:
+        return job_control.tick(sys.modules[__name__])
+    if args[0] == 'recovery-session' and len(args) == 2 and len(args[1]) <= 4096:
+        return file_recovery.session(sys.modules[__name__], json.loads(base64.b64decode(args[1], validate=True)))
+    if args[0] == 'verification-start' and len(args) == 2 and len(args[1]) <= 4096:
+        return verification.request(sys.modules[__name__], selection=json.loads(base64.b64decode(args[1], validate=True)))
+    if args[0] == 'verification-configure' and len(args) == 2 and len(args[1]) <= 4096:
+        return verification.configure(json.loads(base64.b64decode(args[1], validate=True)), sys.modules[__name__])
     if args[0] == 'apply' and len(args) == 2 and len(args[1]) <= 60000:
         return apply(json.loads(base64.b64decode(args[1], validate=True)))
     if len(args) != 1:
         raise ValueError('Unexpected arguments.')
+    if args[0] == 'verification-stop':
+        props = properties(verification.SERVICE)
+        return job_control.control(sys.modules[__name__], dict(kind='check', operation='cancel', delay=0,
+            revision=read_config()['revision'], invocation=props.get('InvocationID','') if props.get('ActiveState') in job_control.ACTIVE else ''))
+    if args[0] == 'verification-start':
+        return verification.request(sys.modules[__name__])
+    if args[0] == 'verification-after-backup':
+        return verification.request(sys.modules[__name__], after_backup=True)
+    if args[0] == 'verification-run':
+        return verification.run_check(sys.modules[__name__])
     if args[0] == 'upgrade-reporting':
         config = read_config()
         return apply({key: config[key] for key in CONFIG_FIELDS})
@@ -467,6 +501,10 @@ def main():
         return archives()
     if args[0] == 'mount':
         return prepare_mounts()
+    if args[0] == 'start' and not job_control.allowed('backup',manual=True):
+        raise ValueError('Backups are paused or postponed. Resume or cancel the postponement first.')
+    if args[0] == 'start': job_control.manual_start(sys.modules[__name__],'backup')
+    if args[0] == 'disable': job_control.discard_idle(sys.modules[__name__],'backup')
     command = {'start': ('start', '--no-block', SERVICE), 'enable': ('enable', '--now', TIMER),
                'disable': ('disable', '--now', TIMER)}[args[0]]
     run('systemctl', *command)
@@ -483,7 +521,10 @@ def read_manifest():
 
 if __name__ == '__main__':
     try:
-        print(json.dumps(main()))
+        result = main()
+        exit_code = result.pop('_exit_code', 0)
+        print(json.dumps(result))
+        sys.exit(exit_code)
     except Exception as error:
         print(json.dumps({'error': str(error)}))
         sys.exit(1)

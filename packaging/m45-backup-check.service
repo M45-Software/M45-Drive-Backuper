@@ -1,0 +1,15 @@
+[Unit]
+Description=Verify M45 Borg backup repository and archive data
+After=local-fs.target local-system-backup.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecCondition=/usr/libexec/m45-drive-backuper/backend job-allowed check
+ExecStart=/usr/libexec/m45-drive-backuper/backend verification-run
+UMask=0077
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=infinity
+RestartForceExitStatus=75
+RestartSec=5min

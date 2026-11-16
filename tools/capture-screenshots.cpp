@@ -1,5 +1,6 @@
 // Capture demo pages: capture-screenshots [output] [dark|light|switch-dark|switch-light].
 #include "window.h"
+#include "recoverybrowser.h"
 #include <QApplication>
 #include <QDir>
 #include <QFont>
@@ -26,6 +27,9 @@ QPalette screenshotPalette() {
     p.setColor(QPalette::PlaceholderText, QColor("#a0a9b6"));
     p.setColor(QPalette::Highlight, QColor("#347fba"));
     p.setColor(QPalette::HighlightedText, Qt::white);
+    p.setColor(QPalette::Disabled, QPalette::Base, QColor("#20242c"));
+    p.setColor(QPalette::Disabled, QPalette::Button, QColor("#292d35"));
+    p.setColor(QPalette::Disabled, QPalette::Mid, QColor("#454b56"));
     p.setColor(QPalette::Disabled, QPalette::Text, QColor("#949dab"));
     p.setColor(QPalette::Disabled, QPalette::WindowText, p.color(QPalette::Disabled, QPalette::Text));
     p.setColor(QPalette::Disabled, QPalette::ButtonText, p.color(QPalette::Disabled, QPalette::Text));
@@ -55,11 +59,19 @@ int main(int argc, char **argv) {
         Window window(true);
         window.resize(1200, 960);
         window.show();
+        RecoveryBrowser browser({}, "home-2026-11-16T06:02:02", true, &window);
+        browser.show();
         if (theme.startsWith("switch-")) {
             app.processEvents();
             app.setPalette(theme == "switch-dark" ? dark : light);
             app.processEvents();
         }
+        QEventLoop settleBrowser;
+        QTimer::singleShot(100, &settleBrowser, &QEventLoop::quit);
+        settleBrowser.exec();
+        saved = browser.grab().save(output.filePath("recovery.png")) && saved;
+        browser.hide();
+        window.activateWindow();
         for (int page = 0; page < names.size(); ++page) {
             window.selectPage(page);
             // Let wrapping, scroll areas and content-sized rows finish layout.

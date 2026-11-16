@@ -61,6 +61,14 @@ class BackendTests(unittest.TestCase):
         result = subprocess.run(['/bin/bash', '-n'], input=text, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_plan_updates_preserve_verification_hook_and_serialization(self):
+        original=Path(__file__).with_name('fixtures').joinpath('local-system-backup.sh').read_text()
+        hooked=backend.verification.hook_script(original)
+        updated=backend.replacement(hooked,self.data)
+        self.assertEqual(updated.count('backend verification-after-backup'),1)
+        self.assertIn('flock 9\n',updated)
+        self.assertEqual(subprocess.run(['bash','-n'],input=updated,text=True,capture_output=True).returncode,0)
+
     def test_unknown_script_is_rejected(self):
         with self.assertRaises(ValueError): backend.replacement('echo changed', self.data)
 

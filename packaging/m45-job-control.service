@@ -1,0 +1,7 @@
+[Unit]
+Description=Resume explicitly postponed M45 backup jobs
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/m45-drive-backuper/backend job-tick

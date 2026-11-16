@@ -1,0 +1,10 @@
+[Unit]
+Description=Opt-in M45 backup integrity verification schedule
+
+[Timer]
+OnCalendar=Sun *-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
